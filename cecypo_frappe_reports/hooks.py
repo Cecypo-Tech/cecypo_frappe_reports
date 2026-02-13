@@ -1,5 +1,5 @@
-app_name = "cecypo_reports"
-app_title = "Cecypo Reports"
+app_name = "cecypo_frappe_reports"
+app_title = "Cecypo Frappe Reports"
 app_publisher = "Cecypo.Tech"
 app_description = "Custom reports pack"
 app_email = "support@cecypo.tech"
@@ -13,11 +13,11 @@ app_license = "agpl-3.0"
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
 # 	{
-# 		"name": "cecypo_reports",
-# 		"logo": "/assets/cecypo_reports/logo.png",
+# 		"name": "cecypo_frappe_reports",
+# 		"logo": "/assets/cecypo_frappe_reports/logo.png",
 # 		"title": "Cecypo Reports",
-# 		"route": "/cecypo_reports",
-# 		"has_permission": "cecypo_reports.api.permission.has_app_permission"
+# 		"route": "/cecypo_frappe_reports",
+# 		"has_permission": "cecypo_frappe_reports.api.permission.has_app_permission"
 # 	}
 # ]
 
@@ -25,15 +25,15 @@ app_license = "agpl-3.0"
 # ------------------
 
 # include js, css files in header of desk.html
-# app_include_css = "/assets/cecypo_reports/css/cecypo_reports.css"
-# app_include_js = "/assets/cecypo_reports/js/cecypo_reports.js"
+# app_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"
+# app_include_js = "/assets/cecypo_frappe_reports/js/cecypo_frappe_reports.js"
 
 # include js, css files in header of web template
-# web_include_css = "/assets/cecypo_reports/css/cecypo_reports.css"
-# web_include_js = "/assets/cecypo_reports/js/cecypo_reports.js"
+# web_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"
+# web_include_js = "/assets/cecypo_frappe_reports/js/cecypo_frappe_reports.js"
 
 # include custom scss in every website theme (without file extension ".scss")
-# website_theme_scss = "cecypo_reports/public/scss/website"
+# website_theme_scss = "cecypo_frappe_reports/public/scss/website"
 
 # include js, css files in header of web form
 # webform_include_js = {"doctype": "public/js/doctype.js"}
@@ -51,7 +51,7 @@ app_license = "agpl-3.0"
 # Svg Icons
 # ------------------
 # include app icons in desk
-# app_include_icons = "cecypo_reports/public/icons.svg"
+# app_include_icons = "cecypo_frappe_reports/public/icons.svg"
 
 # Home Pages
 # ----------
@@ -75,43 +75,43 @@ app_license = "agpl-3.0"
 
 # add methods and filters to jinja environment
 # jinja = {
-# 	"methods": "cecypo_reports.utils.jinja_methods",
-# 	"filters": "cecypo_reports.utils.jinja_filters"
+# 	"methods": "cecypo_frappe_reports.utils.jinja_methods",
+# 	"filters": "cecypo_frappe_reports.utils.jinja_filters"
 # }
 
 # Installation
 # ------------
 
-# before_install = "cecypo_reports.install.before_install"
-# after_install = "cecypo_reports.install.after_install"
+# before_install = "cecypo_frappe_reports.install.before_install"
+# after_install = "cecypo_frappe_reports.install.after_install"
 
 # Uninstallation
 # ------------
 
-# before_uninstall = "cecypo_reports.uninstall.before_uninstall"
-# after_uninstall = "cecypo_reports.uninstall.after_uninstall"
+# before_uninstall = "cecypo_frappe_reports.uninstall.before_uninstall"
+# after_uninstall = "cecypo_frappe_reports.uninstall.after_uninstall"
 
 # Integration Setup
 # ------------------
 # To set up dependencies/integrations with other apps
 # Name of the app being installed is passed as an argument
 
-# before_app_install = "cecypo_reports.utils.before_app_install"
-# after_app_install = "cecypo_reports.utils.after_app_install"
+# before_app_install = "cecypo_frappe_reports.utils.before_app_install"
+# after_app_install = "cecypo_frappe_reports.utils.after_app_install"
 
 # Integration Cleanup
 # -------------------
 # To clean up dependencies/integrations with other apps
 # Name of the app being uninstalled is passed as an argument
 
-# before_app_uninstall = "cecypo_reports.utils.before_app_uninstall"
-# after_app_uninstall = "cecypo_reports.utils.after_app_uninstall"
+# before_app_uninstall = "cecypo_frappe_reports.utils.before_app_uninstall"
+# after_app_uninstall = "cecypo_frappe_reports.utils.after_app_uninstall"
 
 # Desk Notifications
 # ------------------
 # See frappe.core.notifications.get_notification_config
 
-# notification_config = "cecypo_reports.notifications.get_notification_config"
+# notification_config = "cecypo_frappe_reports.notifications.get_notification_config"
 
 # Permissions
 # -----------
@@ -150,39 +150,39 @@ app_license = "agpl-3.0"
 
 # scheduler_events = {
 # 	"all": [
-# 		"cecypo_reports.tasks.all"
+# 		"cecypo_frappe_reports.tasks.all"
 # 	],
 # 	"daily": [
-# 		"cecypo_reports.tasks.daily"
+# 		"cecypo_frappe_reports.tasks.daily"
 # 	],
 # 	"hourly": [
-# 		"cecypo_reports.tasks.hourly"
+# 		"cecypo_frappe_reports.tasks.hourly"
 # 	],
 # 	"weekly": [
-# 		"cecypo_reports.tasks.weekly"
+# 		"cecypo_frappe_reports.tasks.weekly"
 # 	],
 # 	"monthly": [
-# 		"cecypo_reports.tasks.monthly"
+# 		"cecypo_frappe_reports.tasks.monthly"
 # 	],
 # }
 
 # Testing
 # -------
 
-# before_tests = "cecypo_reports.install.before_tests"
+# before_tests = "cecypo_frappe_reports.install.before_tests"
 
 # Overriding Methods
 # ------------------------------
 #
 # override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "cecypo_reports.event.get_events"
+# 	"frappe.desk.doctype.event.event.get_events": "cecypo_frappe_reports.event.get_events"
 # }
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
 # override_doctype_dashboards = {
-# 	"Task": "cecypo_reports.task.get_dashboard_data"
+# 	"Task": "cecypo_frappe_reports.task.get_dashboard_data"
 # }
 
 # exempt linked doctypes from being automatically cancelled
@@ -196,13 +196,13 @@ app_license = "agpl-3.0"
 
 # Request Events
 # ----------------
-# before_request = ["cecypo_reports.utils.before_request"]
-# after_request = ["cecypo_reports.utils.after_request"]
+# before_request = ["cecypo_frappe_reports.utils.before_request"]
+# after_request = ["cecypo_frappe_reports.utils.after_request"]
 
 # Job Events
 # ----------
-# before_job = ["cecypo_reports.utils.before_job"]
-# after_job = ["cecypo_reports.utils.after_job"]
+# before_job = ["cecypo_frappe_reports.utils.before_job"]
+# after_job = ["cecypo_frappe_reports.utils.after_job"]
 
 # User Data Protection
 # --------------------
@@ -232,7 +232,7 @@ app_license = "agpl-3.0"
 # --------------------------------
 
 # auth_hooks = [
-# 	"cecypo_reports.auth.validate"
+# 	"cecypo_frappe_reports.auth.validate"
 # ]
 
 # Automatically update python controller files with type annotations for this app.
