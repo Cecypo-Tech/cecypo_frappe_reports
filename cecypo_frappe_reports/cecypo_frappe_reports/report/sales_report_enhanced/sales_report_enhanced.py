@@ -59,12 +59,28 @@ def get_invoices(filters):
 
 	if filters.get("mode_of_payment"):
 		sip = frappe.qb.DocType("Sales Invoice Payment")
-		query = (
-			query.inner_join(sip)
-			.on(si.name == sip.parent)
+		sia = frappe.qb.DocType("Sales Invoice Advance")
+		pe = frappe.qb.DocType("Payment Entry")
+
+		# Invoices with direct payment matching the mode
+		direct = (
+			frappe.qb.from_(sip)
+			.select(sip.parent)
 			.where(sip.mode_of_payment == filters.mode_of_payment)
-			.distinct()
 		)
+
+		# Invoices with advance payment entry matching the mode
+		via_advance = (
+			frappe.qb.from_(sia)
+			.inner_join(pe)
+			.on(sia.reference_name == pe.name)
+			.select(sia.parent)
+			.where(sia.reference_type == "Payment Entry")
+			.where(pe.docstatus == 1)
+			.where(pe.mode_of_payment == filters.mode_of_payment)
+		)
+
+		query = query.where(si.name.isin(direct) | si.name.isin(via_advance))
 
 	return query.run(as_dict=True)
 
@@ -73,6 +89,10 @@ def get_payment_map(invoice_names):
 	if not invoice_names:
 		return {}, []
 
+	payment_map = {}
+	modes_set = set()
+
+	# 1. Direct payments (Sales Invoice Payment child table - POS invoices)
 	sip = frappe.qb.DocType("Sales Invoice Payment")
 	payments = (
 		frappe.qb.from_(sip)
@@ -86,11 +106,35 @@ def get_payment_map(invoice_names):
 		.run(as_dict=True)
 	)
 
-	payment_map = {}
-	modes_set = set()
 	for p in payments:
 		payment_map.setdefault(p.parent, {})[p.mode_of_payment] = flt(p.base_amount)
 		modes_set.add(p.mode_of_payment)
+
+	# 2. Advances (Sales Invoice Advance → Payment Entry)
+	sia = frappe.qb.DocType("Sales Invoice Advance")
+	pe = frappe.qb.DocType("Payment Entry")
+	advances = (
+		frappe.qb.from_(sia)
+		.inner_join(pe)
+		.on(sia.reference_name == pe.name)
+		.select(
+			sia.parent,
+			pe.mode_of_payment,
+			fn.Sum(sia.allocated_amount).as_("allocated_amount"),
+		)
+		.where(sia.parent.isin(invoice_names))
+		.where(sia.reference_type == "Payment Entry")
+		.where(pe.docstatus == 1)
+		.groupby(sia.parent, pe.mode_of_payment)
+		.run(as_dict=True)
+	)
+
+	for a in advances:
+		if not a.mode_of_payment:
+			continue
+		existing = flt(payment_map.setdefault(a.parent, {}).get(a.mode_of_payment, 0))
+		payment_map[a.parent][a.mode_of_payment] = existing + flt(a.allocated_amount)
+		modes_set.add(a.mode_of_payment)
 
 	all_modes = sorted(modes_set)
 	return payment_map, all_modes
