@@ -57,6 +57,21 @@ def get_invoices(filters):
 	if filters.get("customer_group"):
 		query = query.where(si.customer_group == filters.customer_group)
 
+	if filters.get("warehouse"):
+		sii = frappe.qb.DocType("Sales Invoice Item")
+		warehouse_sub = (
+			frappe.qb.from_(sii)
+			.select(sii.parent)
+			.where(sii.warehouse == filters.warehouse)
+			.distinct()
+		)
+		query = query.where(si.name.isin(warehouse_sub))
+
+	if filters.get("custom_sale_type") and "custom_sale_type" in [
+		f.fieldname for f in frappe.get_meta("Sales Invoice").fields
+	]:
+		query = query.where(si.custom_sale_type == filters.custom_sale_type)
+
 	if filters.get("mode_of_payment"):
 		sip = frappe.qb.DocType("Sales Invoice Payment")
 		sia = frappe.qb.DocType("Sales Invoice Advance")
@@ -177,13 +192,15 @@ def get_columns(all_modes):
 		{
 			"label": _("Grand Total"),
 			"fieldname": "grand_total",
-			"fieldtype": "Currency",
+			"fieldtype": "Float",
+			"precision": 2,
 			"width": 120,
 		},
 		{
 			"label": _("Outstanding Amount"),
 			"fieldname": "outstanding_amount",
-			"fieldtype": "Currency",
+			"fieldtype": "Float",
+			"precision": 2,
 			"width": 120,
 		},
 	]
@@ -193,7 +210,7 @@ def get_columns(all_modes):
 			{
 				"label": _(mode),
 				"fieldname": frappe.scrub(mode),
-				"fieldtype": "Currency",
+				"fieldtype": "Float",
 				"width": 120,
 			}
 		)
@@ -210,13 +227,13 @@ def get_data(invoices, payment_map, all_modes):
 			"posting_date": inv.posting_date,
 			"customer": inv.customer,
 			"customer_name": inv.customer_name,
-			"grand_total": flt(inv.base_grand_total),
-			"outstanding_amount": flt(inv.outstanding_amount),
+			"grand_total": flt(inv.base_grand_total, 2),
+			"outstanding_amount": flt(inv.outstanding_amount, 2),
 		}
 
 		inv_payments = payment_map.get(inv.name, {})
 		for mode in all_modes:
-			row[frappe.scrub(mode)] = flt(inv_payments.get(mode, 0))
+			row[frappe.scrub(mode)] = flt(inv_payments.get(mode, 0), 2)
 
 		data.append(row)
 
@@ -234,13 +251,13 @@ def get_report_summary(data, all_modes):
 		{
 			"value": total_grand,
 			"label": _("Total Grand Total"),
-			"datatype": "Currency",
+			"datatype": "Float",
 			"indicator": "Blue",
 		},
 		{
 			"value": total_outstanding,
 			"label": _("Total Outstanding"),
-			"datatype": "Currency",
+			"datatype": "Float",
 			"indicator": "Red" if total_outstanding > 0 else "Green",
 		},
 	]
@@ -252,9 +269,18 @@ def get_report_summary(data, all_modes):
 			{
 				"value": total,
 				"label": _(mode),
-				"datatype": "Currency",
+				"datatype": "Float",
 				"indicator": "Blue",
 			}
 		)
 
 	return summary
+
+
+@frappe.whitelist()
+def get_custom_sale_type_options():
+	meta = frappe.get_meta("Sales Invoice")
+	field = meta.get_field("custom_sale_type")
+	if not field:
+		return None
+	return [o.strip() for o in (field.options or "").split("\n") if o.strip()]
