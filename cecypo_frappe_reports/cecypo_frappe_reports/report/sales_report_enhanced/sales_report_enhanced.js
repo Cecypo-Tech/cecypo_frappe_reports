@@ -51,8 +51,8 @@ frappe.query_reports["Sales Report Enhanced"] = {
 		},
 	],
 	formatter(value, row, column, data, default_formatter) {
-		if (column.fieldtype === "Float" && value != null) {
-			return parseFloat(value).toFixed(2);
+		if ((column.fieldtype === "Float" || column.fieldtype === "Currency") && value != null) {
+			return frappe.utils.format_number(value, null, 2);
 		}
 		return default_formatter(value, row, column, data);
 	},

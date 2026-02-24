@@ -64,6 +64,19 @@ Report type is `Script Report` with role access defined in the JSON.
 - Column formatting via `formatter` callbacks and Frappe's `format_currency`/`format_number`
 - Apply compact display in `onload`: set column widths to `"Best Fit"` and hide unnecessary toolbar elements
 
+### Number Formatting
+
+All amount columns (`Float` and `Currency` fieldtype) must be formatted as comma-separated numbers **without** a currency symbol. Always add a `formatter` to each report's JS object:
+
+```javascript
+formatter(value, row, column, data, default_formatter) {
+    if ((column.fieldtype === "Float" || column.fieldtype === "Currency") && value != null) {
+        return frappe.utils.format_number(value, null, 2);
+    }
+    return default_formatter(value, row, column, data);
+},
+```
+
 ### Code Style
 
 - **Python**: tabs for indentation, double quotes, line length 110, target Python 3.10+ (enforced by ruff)
