@@ -132,7 +132,7 @@ frappe.query_reports["Accounts Receivable Summary Enhanced"] = {
 
 	formatter(value, row, column, data, default_formatter) {
 		if ((column.fieldtype === "Currency" || column.fieldtype === "Float") && value != null) {
-			return frappe.utils.format_number(value, null, 2);
+			return format_number(value, null, 2);
 		}
 		return default_formatter(value, row, column, data);
 	},

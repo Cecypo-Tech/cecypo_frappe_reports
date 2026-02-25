@@ -71,7 +71,7 @@ All amount columns (`Float` and `Currency` fieldtype) must be formatted as comma
 ```javascript
 formatter(value, row, column, data, default_formatter) {
     if ((column.fieldtype === "Float" || column.fieldtype === "Currency") && value != null) {
-        return frappe.utils.format_number(value, null, 2);
+        return format_number(value, null, 2);
     }
     return default_formatter(value, row, column, data);
 },

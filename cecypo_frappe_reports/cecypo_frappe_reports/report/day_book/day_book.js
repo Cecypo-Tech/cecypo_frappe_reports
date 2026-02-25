@@ -1,7 +1,7 @@
 // Copyright (c) 2026, Cecypo and contributors
 // For license information, please see license.txt
 
-frappe.query_reports["Sales Report Enhanced"] = {
+frappe.query_reports["Day Book"] = {
 	filters: [
 		{
 			fieldname: "company",
@@ -15,7 +15,7 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			fieldname: "from_date",
 			label: __("From Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
+			default: frappe.datetime.get_today(),
 			reqd: 1,
 		},
 		{
@@ -26,52 +26,85 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			reqd: 1,
 		},
 		{
-			fieldname: "customer",
-			label: __("Customer"),
-			fieldtype: "Link",
-			options: "Customer",
+			fieldname: "date_based_on",
+			label: __("Date Based On"),
+			fieldtype: "Select",
+			options: ["Posting Date", "Creation Date"].join("\n"),
+			default: "Posting Date",
 		},
 		{
-			fieldname: "customer_group",
-			label: __("Customer Group"),
-			fieldtype: "Link",
-			options: "Customer Group",
+			fieldname: "voucher_category",
+			label: __("Voucher Category"),
+			fieldtype: "Select",
+			options: [
+				"",
+				"Sales",
+				"Purchase",
+				"Payments & Journals",
+				"Stock",
+				"Assets",
+				"Other",
+			].join("\n"),
 		},
 		{
-			fieldname: "mode_of_payment",
-			label: __("Mode of Payment"),
+			fieldname: "party_type",
+			label: __("Party Type"),
 			fieldtype: "Link",
-			options: "Mode of Payment",
+			options: "Party Type",
+		},
+		{
+			fieldname: "party",
+			label: __("Party"),
+			fieldtype: "Dynamic Link",
+			options: "party_type",
+		},
+		{
+			fieldname: "account",
+			label: __("Account"),
+			fieldtype: "Link",
+			options: "Account",
+			get_query() {
+				let company = frappe.query_report.get_filter_value("company");
+				return { filters: { company: company } };
+			},
+		},
+		{
+			fieldname: "cost_center",
+			label: __("Cost Center"),
+			fieldtype: "Link",
+			options: "Cost Center",
+			get_query() {
+				let company = frappe.query_report.get_filter_value("company");
+				return { filters: { company: company } };
+			},
 		},
 		{
 			fieldname: "warehouse",
 			label: __("Warehouse"),
 			fieldtype: "Link",
 			options: "Warehouse",
+			get_query() {
+				let company = frappe.query_report.get_filter_value("company");
+				return { filters: { company: company } };
+			},
+		},
+		{
+			fieldname: "summarized",
+			label: __("Summarized"),
+			fieldtype: "Check",
+			default: 0,
 		},
 	],
 	formatter(value, row, column, data, default_formatter) {
-		if ((column.fieldtype === "Float" || column.fieldtype === "Currency") && value != null) {
+		if (
+			(column.fieldtype === "Float" || column.fieldtype === "Currency") &&
+			value != null
+		) {
 			return format_number(value, null, 2);
 		}
 		return default_formatter(value, row, column, data);
 	},
 	onload(report) {
-		// Add custom_sale_type filter if the field exists on Sales Invoice
-		frappe.call({
-			method: "cecypo_frappe_reports.cecypo_frappe_reports.report.sales_report_enhanced.sales_report_enhanced.get_custom_sale_type_options",
-			callback(r) {
-				if (r.message) {
-					report.page.add_field({
-						fieldname: "custom_sale_type",
-						label: __("Sale Type"),
-						fieldtype: "Select",
-						options: ["", ...r.message],
-					});
-				}
-			},
-		});
-
 		// Compact report summary styling
 		let style = document.createElement("style");
 		style.textContent = `
@@ -100,13 +133,13 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			const dt = report.datatable;
 			if (!dt) return;
 
-			// Simulate a dblclick on each column's resize handle,
-			// which triggers the datatable's built-in perfect-width logic
 			const handles = dt.header.querySelectorAll(
 				".dt-cell .dt-cell__resize-handle"
 			);
 			handles.forEach((handle) => {
-				handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+				handle.dispatchEvent(
+					new MouseEvent("dblclick", { bubbles: true })
+				);
 			});
 		});
 	},
