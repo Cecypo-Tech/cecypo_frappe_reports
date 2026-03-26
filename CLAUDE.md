@@ -8,23 +8,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-All commands run from the bench root (`/home/frappeuser/frappe-bench`):
+All commands run from the bench root (`/home/frappeuser/bench16`):
 
 ```bash
 # Install app on a site
-bench --site <site-name> install-app cecypo_frappe_reports
+bench --site site16.local install-app cecypo_frappe_reports
 
 # Build frontend assets
 bench build --app cecypo_frappe_reports
 
 # Run migrations after schema changes
-bench --site <site-name> migrate
+bench --site site16.local migrate
 
 # Watch for asset changes during development
 bench watch
 
 # Run Frappe tests
-bench --site <site-name> run-tests --app cecypo_frappe_reports
+bench --site site16.local run-tests --app cecypo_frappe_reports
 ```
 
 ### Code Quality (pre-commit enforced)
@@ -49,20 +49,34 @@ Each report lives under `cecypo_frappe_reports/cecypo_frappe_reports/report/<rep
 
 Report type is `Script Report` with role access defined in the JSON.
 
+### Two Report Patterns
+
+**Pattern 1 — From-scratch reports** (`sales_report_enhanced`, `day_book`):
+- Build all columns, queries, and summaries from scratch using `frappe.qb`
+- `execute(filters)` calls dedicated helpers: `get_columns()`, `get_data()`, `get_report_summary()`
+- Dynamic columns (one per payment mode, etc.) are determined at runtime and added to both columns and `report_summary`
+
+**Pattern 2 — ERPNext wrapper reports** (`accounts_receivable_summary_enhanced`):
+- Import and invoke the upstream ERPNext report class (e.g. `AccountsReceivableSummary`) to get base columns + data
+- Append extra columns via `get_extra_columns()` and enrich each row with additional fields from extra queries
+- Return `columns + get_extra_columns(), data`
+
 ### Backend Patterns
 
-- Use `frappe.qb` (PyPika-based Query Builder) for SQL — avoid raw SQL strings
+- Use `frappe.qb` (PyPika-based Query Builder) for all SQL — avoid raw SQL strings
 - Entry point is `execute(filters)` returning `(columns, data, message, chart, report_summary)`
-- Separate functions for: column generation, data fetching, post-processing/aggregation
-- Payment/advance handling queries `Payment Entry` and `Payment Entry Reference` to map allocations back to invoices
-- Use `frappe.utils.flt(value, 2)` for float precision
+- Use `frappe.utils.flt(value, 2)` for float precision everywhere
+- For datetime → date casting in `frappe.qb`, use PyPika's `CustomFunction`: `CastDate = CustomFunction("DATE", ["value"])`
+- Payment/advance handling: query `Sales Invoice Payment` (direct/POS) and `Sales Invoice Advance → Payment Entry` (advance allocation) separately and merge
+- `@frappe.whitelist()` functions in `.py` files are callable from JS via `frappe.call()` — used for dynamic filter population (e.g., `get_custom_sale_type_options`)
 
 ### Frontend Patterns
 
 - Filters defined declaratively in `frappe.query_reports["Report Name"].filters`
-- Dynamic columns (e.g., one column per payment mode) fetched via `frappe.call()` in `onload`
-- Column formatting via `formatter` callbacks and Frappe's `format_currency`/`format_number`
-- Apply compact display in `onload`: set column widths to `"Best Fit"` and hide unnecessary toolbar elements
+- Dynamic filters added at runtime in `onload` via `frappe.call()` → `report.page.add_field(...)`
+- Column formatting via `formatter` callbacks — see Number Formatting below
+- `onload` injects compact summary `<style>` and adds a "Best Fit" button (triggers dblclick on resize handles)
+- Link filters scoped to the selected company use `get_query()` returning `{ filters: { company } }`
 
 ### Number Formatting
 
@@ -77,6 +91,10 @@ formatter(value, row, column, data, default_formatter) {
 },
 ```
 
+### Reusable `onload` Boilerplate
+
+Both existing from-scratch reports share the same `onload`: compact summary CSS injection + "Best Fit" button. Copy this pattern when adding new reports.
+
 ### Code Style
 
 - **Python**: tabs for indentation, double quotes, line length 110, target Python 3.10+ (enforced by ruff)
@@ -87,7 +105,7 @@ formatter(value, row, column, data, default_formatter) {
 
 1. Create directory: `cecypo_frappe_reports/cecypo_frappe_reports/report/<report_name>/`
 2. Add `__init__.py` (empty)
-3. Create the `.json` metadata file (copy structure from `sales_report_enhanced.json`)
-4. Implement `execute(filters)` in the `.py` file
+3. Create the `.json` metadata file (copy from an existing report's JSON — use `sales_report_enhanced` for from-scratch, `accounts_receivable_summary_enhanced` for wrapper pattern)
+4. Implement `execute(filters)` in the `.py` file following one of the two patterns above
 5. Define filters and formatters in the `.js` file
-6. Run `bench --site <site> migrate` to register the report
+6. Run `bench --site site16.local migrate` to register the report
