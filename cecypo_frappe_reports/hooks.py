@@ -5,6 +5,13 @@ app_description = "Custom reports pack"
 app_email = "support@cecypo.tech"
 app_license = "agpl-3.0"
 
+fixtures = [
+	{
+		"dt": "Print Format",
+		"filters": [["name", "in", ["PSOA GL Statement", "PSOA AR Statement"]]],
+	}
+]
+
 # Apps
 # ------------------
 
