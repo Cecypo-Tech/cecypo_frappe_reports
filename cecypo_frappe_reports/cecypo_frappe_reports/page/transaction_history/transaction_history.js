@@ -24,6 +24,9 @@ class TransactionHistoryPage {
 	// ── Layout ────────────────────────────────────────────────────────────────
 
 	_render() {
+		if (!document.getElementById("th-style-override")) {
+			$('<style id="th-style-override">.th-dt-wrapper .dt-cell,.th-dt-wrapper .dt-cell--header{height:auto!important;min-height:0!important;padding:3px 8px!important;line-height:1.4!important;}</style>').appendTo("head");
+		}
 		$(this.page.main).html(`
 			<div class="transaction-history" style="padding:16px">
 				<ul class="nav nav-tabs" style="margin-bottom:16px">
@@ -317,13 +320,14 @@ class TransactionHistoryPage {
 		const date_key = is_customer ? "last_sale" : "last_purchase";
 		const bc = this.base_currency;
 
+		const accent = is_customer ? "var(--blue)" : "var(--green)";
 		const sort_icon = (key) => {
 			if (!sort_state || sort_state.sort_key !== key) return `<span style="opacity:.35;font-size:10px"> ↕</span>`;
 			return sort_state.sort_dir === "asc" ? `<span style="font-size:10px"> ↑</span>` : `<span style="font-size:10px"> ↓</span>`;
 		};
 		const th = (label, key, align) => `
 			<th class="th-sort-header" data-sort-key="${key}" data-party-type="${party_type}"
-				style="padding:5px 8px;text-align:${align || "left"};color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color);cursor:pointer;white-space:nowrap;user-select:none">
+				style="padding:5px 8px;text-align:${align || "left"};color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent};cursor:pointer;white-space:nowrap;user-select:none">
 				${label}${sort_icon(key)}
 			</th>`;
 
@@ -331,11 +335,11 @@ class TransactionHistoryPage {
 			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
-						<th style="padding:5px 8px;width:28px;border-bottom:1px solid var(--border-color)"></th>
+						<th style="padding:5px 8px;width:28px;border-bottom:2px solid ${accent}"></th>
 						${th(__("Item Code"), "item_code")}
 						${th(__("Item Name"), "item_name")}
-						${th(__("Total Qty"), "total_qty", "right")}
 						${th(count_col, count_key, "right")}
+						${th(__("Total Qty"), "total_qty", "right")}
 						${th(rate_col, rate_key, "right")}
 						${th(__("Total Amount"), "total_amount", "right")}
 						${th(date_col, date_key)}
@@ -344,13 +348,13 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => `
 						<tr class="summary-row" data-item="${r.item_code}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
-							style="${i % 2 ? "background:var(--gray-100)" : "background:var(--bg-color)"};cursor:pointer"
+							style="${i % 2 ? "background:var(--control-bg)" : "background:var(--bg-color)"};cursor:pointer"
 							title="${__("Click to expand transactions")}">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/item/${r.item_code}">${r.item_code}</a></td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.item_name}</td>
-							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r[count_key]}</td>
+							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
 							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[date_key] ? frappe.datetime.str_to_user(r[date_key]) : "—"}</td>
@@ -477,7 +481,7 @@ class TransactionHistoryPage {
 				</thead>
 				<tbody>
 					${rows.map((r, i) => `
-						<tr style="${i % 2 ? "background:var(--gray-100)" : "background:var(--bg-color)"}">
+						<tr style="${i % 2 ? "background:var(--subtle-fg)" : ""}">
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
