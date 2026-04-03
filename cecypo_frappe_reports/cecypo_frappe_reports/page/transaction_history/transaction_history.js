@@ -13,8 +13,10 @@ frappe.pages["transaction-history"].on_page_load = function (wrapper) {
 class TransactionHistoryPage {
 	constructor(page) {
 		this.page = page;
-		this.active_tab = "item";
+		this.base_currency = frappe.defaults.get_default("currency") || "";
 		this.controls = {};
+		this._cust_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
+		this._supp_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
 		this._render();
 		this._bind_tabs();
 	}
@@ -24,23 +26,20 @@ class TransactionHistoryPage {
 	_render() {
 		$(this.page.main).html(`
 			<div class="transaction-history" style="padding:16px">
-				<div class="th-tab-bar" style="display:flex;border-bottom:2px solid var(--border-color);margin-bottom:16px">
-					<button class="th-tab btn btn-default active" data-tab="item"
-						style="border:none;border-bottom:2px solid var(--primary);margin-bottom:-2px;border-radius:0;font-weight:600;padding:8px 20px">
-						${__("Item History")}
-					</button>
-					<button class="th-tab btn btn-default" data-tab="customer"
-						style="border:none;border-bottom:2px solid transparent;margin-bottom:-2px;border-radius:0;padding:8px 20px">
-						${__("Customer History")}
-					</button>
-					<button class="th-tab btn btn-default" data-tab="supplier"
-						style="border:none;border-bottom:2px solid transparent;margin-bottom:-2px;border-radius:0;padding:8px 20px">
-						${__("Supplier History")}
-					</button>
-				</div>
+				<ul class="nav nav-tabs" style="margin-bottom:16px">
+					<li class="nav-item">
+						<a class="nav-link active" href="#" data-tab="item">${__("Item History")}</a>
+					</li>
+					<li class="nav-item">
+						<a class="nav-link" href="#" data-tab="customer">${__("Customer History")}</a>
+					</li>
+					<li class="nav-item">
+						<a class="nav-link" href="#" data-tab="supplier">${__("Supplier History")}</a>
+					</li>
+				</ul>
 
 				<div class="th-panel" data-panel="item">
-					<div class="th-filters item-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
 						<div class="ctrl-item-item" style="min-width:200px"></div>
 						<div class="ctrl-item-company" style="min-width:180px"></div>
 						<div class="ctrl-item-from" style="min-width:120px"></div>
@@ -52,7 +51,7 @@ class TransactionHistoryPage {
 				</div>
 
 				<div class="th-panel hidden" data-panel="customer">
-					<div class="th-filters customer-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
 						<div class="ctrl-cust-customer" style="min-width:220px"></div>
 						<div class="ctrl-cust-company" style="min-width:180px"></div>
 						<div class="ctrl-cust-from" style="min-width:120px"></div>
@@ -63,7 +62,7 @@ class TransactionHistoryPage {
 				</div>
 
 				<div class="th-panel hidden" data-panel="supplier">
-					<div class="th-filters supplier-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
 						<div class="ctrl-supp-supplier" style="min-width:220px"></div>
 						<div class="ctrl-supp-company" style="min-width:180px"></div>
 						<div class="ctrl-supp-from" style="min-width:120px"></div>
@@ -84,28 +83,42 @@ class TransactionHistoryPage {
 			frappe.ui.form.make_control({ parent: $(m).find(parent)[0], df, render_input: true });
 
 		// Item tab
-		this.controls.item = make(".ctrl-item-item", { fieldtype: "Link", options: "Item", fieldname: "item", label: __("Item"), reqd: 1 });
-		this.controls.item_company = make(".ctrl-item-company", { fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1, default: default_company });
+		this.controls.item = make(".ctrl-item-item", {
+			fieldtype: "Link", options: "Item", fieldname: "item", label: __("Item"), reqd: 1,
+		});
+		// Route through ERPNext item_query so the cecypo_powerpack custom search hook activates
+		this.controls.item.get_query = () => ({ query: "erpnext.controllers.queries.item_query" });
+
+		this.controls.item_company = make(".ctrl-item-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
 		this.controls.item_from = make(".ctrl-item-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
 		this.controls.item_to = make(".ctrl-item-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
-		this.controls.item_warehouse = make(".ctrl-item-warehouse", { fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse") });
-
+		this.controls.item_warehouse = make(".ctrl-item-warehouse", {
+			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"),
+		});
 		if (default_company) this.controls.item_company.set_value(default_company);
 
 		// Customer tab
-		this.controls.customer = make(".ctrl-cust-customer", { fieldtype: "Link", options: "Customer", fieldname: "customer", label: __("Customer"), reqd: 1 });
-		this.controls.cust_company = make(".ctrl-cust-company", { fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1, default: default_company });
+		this.controls.customer = make(".ctrl-cust-customer", {
+			fieldtype: "Link", options: "Customer", fieldname: "customer", label: __("Customer"), reqd: 1,
+		});
+		this.controls.cust_company = make(".ctrl-cust-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
 		this.controls.cust_from = make(".ctrl-cust-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
 		this.controls.cust_to = make(".ctrl-cust-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
-
 		if (default_company) this.controls.cust_company.set_value(default_company);
 
 		// Supplier tab
-		this.controls.supplier = make(".ctrl-supp-supplier", { fieldtype: "Link", options: "Supplier", fieldname: "supplier", label: __("Supplier"), reqd: 1 });
-		this.controls.supp_company = make(".ctrl-supp-company", { fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1, default: default_company });
+		this.controls.supplier = make(".ctrl-supp-supplier", {
+			fieldtype: "Link", options: "Supplier", fieldname: "supplier", label: __("Supplier"), reqd: 1,
+		});
+		this.controls.supp_company = make(".ctrl-supp-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
 		this.controls.supp_from = make(".ctrl-supp-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
 		this.controls.supp_to = make(".ctrl-supp-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
-
 		if (default_company) this.controls.supp_company.set_value(default_company);
 	}
 
@@ -131,22 +144,23 @@ class TransactionHistoryPage {
 				warehouse: this.controls.item_warehouse.get_value() || null,
 			},
 			callback: (r) => {
-				if (r.message) $content.html(this._render_item_history(r.message));
+				if (r.message) {
+					$content.empty();
+					this._render_item_history(r.message, $content);
+				}
 			},
 		});
 	}
 
-	_render_item_history({ item_details, stock_metrics, purchases, sales }) {
-		return `
-			${this._render_metrics_grid(item_details, stock_metrics)}
-			<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
-				${this._render_purchase_panel(purchases)}
-				${this._render_sales_panel(sales)}
-			</div>
-		`;
+	_render_item_history({ item_details, stock_metrics, purchases, sales }, $container) {
+		$container.append(this._render_metrics_grid(item_details, stock_metrics));
+		let $grid = $(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">`).appendTo($container);
+		this._render_transaction_panel($grid, purchases, "purchase");
+		this._render_transaction_panel($grid, sales, "sale");
 	}
 
 	_render_metrics_grid(d, m) {
+		const bc = this.base_currency;
 		const row = (label, value, bold) =>
 			`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-color)">
 				<span style="color:var(--text-muted)">${label}</span>
@@ -162,8 +176,8 @@ class TransactionHistoryPage {
 					${row(__("Brand"), d.brand)}
 					${row(__("Stock UOM"), d.stock_uom)}
 					${row(__("Current Stock"), `<span style="color:${stock_color};font-weight:700">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
-					${row(__("Avg. Stock Rate"), format_number(m.avg_rate, null, 2))}
-					${row(__("Stock Value"), format_number(m.stock_value, null, 2))}
+					${row(__("Avg. Stock Rate"), format_currency(m.avg_rate, bc))}
+					${row(__("Stock Value"), format_currency(m.stock_value, bc))}
 				</div>
 				<div>
 					${row(__("Item Code"), d.item_code, true)}
@@ -176,84 +190,60 @@ class TransactionHistoryPage {
 			</div>`;
 	}
 
-	_render_purchase_panel(rows) {
-		let total_qty = rows.reduce((s, r) => s + (r.qty || 0), 0);
-		return `
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--green-highlight, #e8f5e9);padding:8px 12px;font-weight:700;color:var(--green, #2e7d32);display:flex;justify-content:space-between">
-					<span>${__("Purchases")}</span>
-					<span style="font-weight:400;font-size:12px">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
-				</div>
-				<div style="overflow-x:auto">
-					<table style="width:100%;border-collapse:collapse;font-size:12px">
-						<thead>
-							<tr style="background:var(--subtle-fg)">
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Voucher")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Supplier")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Qty")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Curr.")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${__("Val. Rate")}</th>
-							</tr>
-						</thead>
-						<tbody>
-							${rows.length ? rows.map((r, i) => `
-								<tr style="${i % 2 ? "background:var(--subtle-fg)" : ""}">
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/purchase-receipt/${r.voucher_no}">${r.voucher_no}</a></td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.supplier || ""}</td>
-									<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
-									<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.rate, null, 2)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><span style="background:#e3f2fd;padding:2px 5px;border-radius:3px;font-size:10px;font-weight:600">${r.currency || ""}</span></td>
-									<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_number(r.valuation_rate, null, 2)}</td>
-								</tr>`).join("") : `<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-muted)">${__("No purchases found")}</td></tr>`}
-						</tbody>
-					</table>
-				</div>
-			</div>`;
-	}
+	_render_transaction_panel($grid, rows, type) {
+		const is_purchase = type === "purchase";
+		const total_qty = rows.reduce((s, r) => s + (r.qty || 0), 0);
+		const accent = is_purchase ? "var(--green, #2e7d32)" : "var(--blue, #1565c0)";
+		const label = is_purchase ? __("Purchases") : __("Sales");
+		const bc = this.base_currency;
 
-	_render_sales_panel(rows) {
-		let total_qty = rows.reduce((s, r) => s + (r.qty || 0), 0);
-		return `
+		let $panel = $(`
 			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--blue-highlight, #e3f2fd);padding:8px 12px;font-weight:700;color:var(--blue, #1565c0);display:flex;justify-content:space-between">
-					<span>${__("Sales")}</span>
-					<span style="font-weight:400;font-size:12px">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
+				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
+					<span style="color:${accent}">${label}</span>
+					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
 				</div>
-				<div style="overflow-x:auto">
-					<table style="width:100%;border-collapse:collapse;font-size:12px">
-						<thead>
-							<tr style="background:var(--subtle-fg)">
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Voucher")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Customer")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Qty")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
-								<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Curr.")}</th>
-								<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${__("Base Rate")}</th>
-							</tr>
-						</thead>
-						<tbody>
-							${rows.length ? rows.map((r, i) => `
-								<tr style="${i % 2 ? "background:var(--subtle-fg)" : ""}">
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/sales-invoice/${r.voucher_no}">${r.voucher_no}</a></td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer || ""}</td>
-									<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
-									<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.rate, null, 2)}</td>
-									<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><span style="background:#fce4ec;padding:2px 5px;border-radius:3px;font-size:10px;font-weight:600">${r.currency || ""}</span></td>
-									<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_number(r.base_rate, null, 2)}</td>
-								</tr>`).join("") : `<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-muted)">${__("No sales found")}</td></tr>`}
-						</tbody>
-					</table>
-				</div>
-			</div>`;
+				<div class="th-dt-wrapper"></div>
+			</div>
+		`).appendTo($grid);
+
+		const party_col = is_purchase ? __("Supplier") : __("Customer");
+		const party_key = is_purchase ? "supplier" : "customer";
+		const rate_label = is_purchase ? __("Val. Rate") : __("Base Rate");
+		const rate_key = is_purchase ? "valuation_rate" : "base_rate";
+		const doctype_slug = is_purchase ? "purchase-receipt" : "sales-invoice";
+
+		const columns = [
+			{ name: __("Date"), id: "date", width: 95 },
+			{ name: __("Voucher"), id: "voucher_no", width: 155 },
+			{ name: party_col, id: party_key, width: 155 },
+			{ name: __("Qty"), id: "qty", width: 75, align: "right" },
+			{ name: __("UOM"), id: "uom", width: 60 },
+			{ name: __("Rate"), id: "rate", width: 130, align: "right" },
+			{ name: rate_label, id: rate_key, width: 130, align: "right" },
+		];
+
+		// Each cell: {content: displayHTML, value: rawValue} — DataTable uses value for sort, content for display
+		const data = rows.map(r => [
+			{ content: frappe.datetime.str_to_user(r.date), value: r.date },
+			{ content: `<a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a>`, value: r.voucher_no },
+			r[party_key] || "",
+			{ content: format_number(r.qty, null, 2), value: r.qty },
+			r.uom || "",
+			{ content: format_currency(r.rate, r.currency), value: r.rate },
+			{ content: format_currency(r[rate_key], bc), value: r[rate_key] },
+		]);
+
+		new frappe.DataTable($panel.find(".th-dt-wrapper")[0], {
+			columns,
+			data,
+			noDataMessage: is_purchase ? __("No purchases found") : __("No sales found"),
+			serialNoColumn: false,
+			checkboxColumn: false,
+			inlineFilters: false,
+			clusterize: false,
+			layout: "fluid",
+		});
 	}
 
 	// ── Customer History ──────────────────────────────────────────────────────
@@ -274,8 +264,12 @@ class TransactionHistoryPage {
 				to_date: this.controls.cust_to.get_value() || null,
 			},
 			callback: (r) => {
-				if (r.message != null)
-					$content.html(this._render_party_summary(r.message, "customer", customer, company));
+				if (r.message != null) {
+					this._cust_state.rows = r.message;
+					this._cust_state.party = customer;
+					this._cust_state.company = company;
+					$content.html(this._render_party_summary(r.message, "customer", customer, company, this._cust_state));
+				}
 			},
 		});
 	}
@@ -298,15 +292,19 @@ class TransactionHistoryPage {
 				to_date: this.controls.supp_to.get_value() || null,
 			},
 			callback: (r) => {
-				if (r.message != null)
-					$content.html(this._render_party_summary(r.message, "supplier", supplier, company));
+				if (r.message != null) {
+					this._supp_state.rows = r.message;
+					this._supp_state.party = supplier;
+					this._supp_state.company = company;
+					$content.html(this._render_party_summary(r.message, "supplier", supplier, company, this._supp_state));
+				}
 			},
 		});
 	}
 
 	// ── Shared: accordion summary table ──────────────────────────────────────
 
-	_render_party_summary(rows, party_type, party, company) {
+	_render_party_summary(rows, party_type, party, company, sort_state) {
 		if (!rows.length)
 			return `<div class="text-muted" style="padding:20px">${__("No transactions found")}</div>`;
 
@@ -317,38 +315,49 @@ class TransactionHistoryPage {
 		const count_key = is_customer ? "invoice_count" : "receipt_count";
 		const rate_key = is_customer ? "avg_rate" : "avg_valuation_rate";
 		const date_key = is_customer ? "last_sale" : "last_purchase";
+		const bc = this.base_currency;
+
+		const sort_icon = (key) => {
+			if (!sort_state || sort_state.sort_key !== key) return `<span style="opacity:.35;font-size:10px"> ↕</span>`;
+			return sort_state.sort_dir === "asc" ? `<span style="font-size:10px"> ↑</span>` : `<span style="font-size:10px"> ↓</span>`;
+		};
+		const th = (label, key, align) => `
+			<th class="th-sort-header" data-sort-key="${key}" data-party-type="${party_type}"
+				style="padding:5px 8px;text-align:${align || "left"};color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color);cursor:pointer;white-space:nowrap;user-select:none">
+				${label}${sort_icon(key)}
+			</th>`;
 
 		return `
-			<table style="width:100%;border-collapse:collapse;font-size:12px">
+			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
 						<th style="padding:5px 8px;width:28px;border-bottom:1px solid var(--border-color)"></th>
-						<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Item Code")}</th>
-						<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Item Name")}</th>
-						<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${__("Total Qty")}</th>
-						<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${count_col}</th>
-						<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${rate_col}</th>
-						<th style="padding:5px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${__("Total Amount")}</th>
-						<th style="padding:5px 8px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border-color)">${date_col}</th>
+						${th(__("Item Code"), "item_code")}
+						${th(__("Item Name"), "item_name")}
+						${th(__("Total Qty"), "total_qty", "right")}
+						${th(count_col, count_key, "right")}
+						${th(rate_col, rate_key, "right")}
+						${th(__("Total Amount"), "total_amount", "right")}
+						${th(date_col, date_key)}
 					</tr>
 				</thead>
 				<tbody>
 					${rows.map((r, i) => `
 						<tr class="summary-row" data-item="${r.item_code}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
-							style="${i % 2 ? "background:var(--subtle-fg)" : ""};cursor:pointer"
+							style="${i % 2 ? "background:var(--subtle-fg)" : "background:var(--bg-color)"};cursor:pointer"
 							title="${__("Click to expand transactions")}">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/item/${r.item_code}">${r.item_code}</a></td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.item_name}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r[count_key]}</td>
-							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r[rate_key], null, 2)}</td>
-							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_number(r.total_amount, null, 2)}</td>
+							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[date_key] ? frappe.datetime.str_to_user(r[date_key]) : "—"}</td>
 						</tr>
 						<tr class="detail-row hidden" data-detail-for="${r.item_code}">
 							<td colspan="8" style="padding:0;border-bottom:2px solid var(--border-color)">
-								<div class="detail-content" style="padding:8px 24px;background:var(--fg-color)">
+								<div class="detail-content" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
 							</td>
@@ -363,10 +372,11 @@ class TransactionHistoryPage {
 	_bind_tabs() {
 		const m = this.page.main;
 
-		// Tab switching
-		$(m).on("click", ".th-tab", (e) => {
-			$(m).find(".th-tab").css("border-bottom-color", "transparent").css("font-weight", "normal");
-			$(e.currentTarget).css("border-bottom-color", "var(--primary)").css("font-weight", "600");
+		// Bootstrap nav-tabs switching
+		$(m).on("click", ".nav-link[data-tab]", (e) => {
+			e.preventDefault();
+			$(m).find(".nav-link[data-tab]").removeClass("active");
+			$(e.currentTarget).addClass("active");
 			$(m).find(".th-panel").addClass("hidden");
 			$(m).find(`[data-panel="${$(e.currentTarget).data("tab")}"]`).removeClass("hidden");
 		});
@@ -375,8 +385,34 @@ class TransactionHistoryPage {
 		$(m).on("click", ".btn-get-customer", () => this._load_customer_history());
 		$(m).on("click", ".btn-get-supplier", () => this._load_supplier_history());
 
+		// Column sort on accordion summary tables
+		$(m).on("click", ".th-sort-header", (e) => {
+			e.stopPropagation();
+			const key = $(e.currentTarget).data("sort-key");
+			const party_type = $(e.currentTarget).data("party-type");
+			const state = party_type === "customer" ? this._cust_state : this._supp_state;
+
+			if (state.sort_key === key) {
+				state.sort_dir = state.sort_dir === "asc" ? "desc" : "asc";
+			} else {
+				state.sort_key = key;
+				state.sort_dir = "asc";
+			}
+
+			const sorted = [...state.rows].sort((a, b) => {
+				const av = a[key] ?? "";
+				const bv = b[key] ?? "";
+				const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+				return state.sort_dir === "asc" ? cmp : -cmp;
+			});
+
+			const $content = $(m).find(party_type === "customer" ? ".customer-content" : ".supplier-content");
+			$content.html(this._render_party_summary(sorted, party_type, state.party, state.company, state));
+		});
+
 		// Accordion: expand/collapse summary rows
 		$(m).on("click", ".summary-row", (e) => {
+			if ($(e.target).is("a")) return;
 			let $row = $(e.currentTarget);
 			let item_code = $row.data("item");
 			let party = $row.data("party");
@@ -393,7 +429,6 @@ class TransactionHistoryPage {
 			$row.find("td:first").text("▼");
 			$detail.removeClass("hidden");
 
-			// Only fetch if not already loaded
 			if ($detail.find(".detail-content").data("loaded")) return;
 
 			let is_customer = party_type === "customer";
@@ -425,34 +460,31 @@ class TransactionHistoryPage {
 
 		const rate_label = is_customer ? __("Base Rate") : __("Val. Rate");
 		const rate_key = is_customer ? "base_rate" : "valuation_rate";
+		const bc = this.base_currency;
+		const doctype_slug = is_customer ? "sales-invoice" : "purchase-receipt";
 
 		return `
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
 				<thead>
-					<tr style="background:var(--yellow-highlight, #fffde7)">
-						<th style="padding:3px 8px;text-align:left;color:var(--text-muted)">${__("Date")}</th>
-						<th style="padding:3px 8px;text-align:left;color:var(--text-muted)">${__("Voucher No")}</th>
-						<th style="padding:3px 8px;text-align:right;color:var(--text-muted)">${__("Qty")}</th>
-						<th style="padding:3px 8px;text-align:left;color:var(--text-muted)">${__("UOM")}</th>
-						<th style="padding:3px 8px;text-align:right;color:var(--text-muted)">${__("Rate")}</th>
-						<th style="padding:3px 8px;text-align:left;color:var(--text-muted)">${__("Currency")}</th>
-						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700">${rate_label}</th>
+					<tr style="background:var(--subtle-fg)">
+						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Date")}</th>
+						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Voucher No")}</th>
+						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Qty")}</th>
+						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
+						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
+						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>
 					</tr>
 				</thead>
 				<tbody>
-					${rows.map((r, i) => {
-						let doctype_slug = is_customer ? "sales-invoice" : "purchase-receipt";
-						return `
-							<tr style="${i % 2 ? "background:var(--yellow-highlight, #fffde7)" : "background:var(--fg-color)"}">
-								<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-								<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
-								<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
-								<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
-								<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.rate, null, 2)}</td>
-								<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><span style="background:#e3f2fd;padding:1px 4px;border-radius:3px;font-size:10px;font-weight:600">${r.currency || ""}</span></td>
-								<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_number(r[rate_key], null, 2)}</td>
-							</tr>`;
-					}).join("")}
+					${rows.map((r, i) => `
+						<tr style="${i % 2 ? "background:var(--subtle-fg)" : "background:var(--bg-color)"}">
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
+							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
+							<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+						</tr>`).join("")}
 				</tbody>
 			</table>`;
 	}

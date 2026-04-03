@@ -64,9 +64,9 @@ Report type is `Script Report` with role access defined in the JSON.
 - Column formatting via `formatter` callbacks and Frappe's `format_currency`/`format_number`
 - Apply compact display in `onload`: set column widths to `"Best Fit"` and hide unnecessary toolbar elements
 
-### Number Formatting
+### Number & Currency Formatting
 
-All amount columns (`Float` and `Currency` fieldtype) must be formatted as comma-separated numbers **without** a currency symbol. Always add a `formatter` to each report's JS object:
+**In Script Reports** — amount columns must show comma-separated numbers **without** a currency symbol. Always add a `formatter` to each report's JS object:
 
 ```javascript
 formatter(value, row, column, data, default_formatter) {
@@ -76,6 +76,35 @@ formatter(value, row, column, data, default_formatter) {
     return default_formatter(value, row, column, data);
 },
 ```
+
+**In Custom Pages / JS** — use these globals for inline rendering:
+
+| Need | JS call |
+|------|---------|
+| Number with currency symbol (e.g. `KES 1,234.56`) | `format_currency(value, currency_code)` |
+| Plain number, no symbol (e.g. `1,234.56`) | `format_number(value, null, 2)` |
+| System base currency code | `frappe.defaults.get_default("currency")` |
+
+Example:
+```javascript
+const bc = frappe.defaults.get_default("currency") || "";
+format_currency(row.amount, row.currency);       // transaction currency
+format_currency(row.base_amount, bc);            // base/home currency
+format_number(row.qty, null, 2);                 // unitless quantity
+```
+
+**In Python** — use `frappe.format_value` when you need a formatted string:
+
+```python
+# With a meta field object:
+frappe.format_value(doc.amount, doc.meta.get_field("amount"), doc)
+
+# With an explicit fieldtype dict:
+frappe.format_value(value, {"fieldtype": "Currency"}, doc)
+frappe.format_value(value, {"fieldtype": "Float", "precision": 2})
+```
+
+For raw arithmetic precision always use `frappe.utils.flt(value, 2)` — this returns a `float`, not a formatted string.
 
 ### Code Style
 
