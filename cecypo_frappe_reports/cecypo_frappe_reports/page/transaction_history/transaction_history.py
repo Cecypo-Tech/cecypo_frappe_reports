@@ -286,6 +286,8 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 		query = query.where(si.posting_date >= from_date)
 	if to_date:
 		query = query.where(si.posting_date <= to_date)
+	if warehouse:
+		query = query.where(sii.warehouse == warehouse)
 
 	rows = query.run(as_dict=True)
 	for r in rows:

@@ -203,7 +203,7 @@ class TransactionHistoryPage {
 					<span style="color:${accent}">${label}</span>
 					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
 				</div>
-				<div class="th-dt-wrapper"></div>
+				<div style="max-height:280px;overflow-y:auto"><div class="th-dt-wrapper"></div></div>
 			</div>
 		`).appendTo($grid);
 
@@ -344,7 +344,7 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => `
 						<tr class="summary-row" data-item="${r.item_code}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
-							style="${i % 2 ? "background:var(--subtle-fg)" : "background:var(--bg-color)"};cursor:pointer"
+							style="${i % 2 ? "background:var(--gray-100)" : "background:var(--bg-color)"};cursor:pointer"
 							title="${__("Click to expand transactions")}">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/item/${r.item_code}">${r.item_code}</a></td>
@@ -477,7 +477,7 @@ class TransactionHistoryPage {
 				</thead>
 				<tbody>
 					${rows.map((r, i) => `
-						<tr style="${i % 2 ? "background:var(--subtle-fg)" : "background:var(--bg-color)"}">
+						<tr style="${i % 2 ? "background:var(--gray-100)" : "background:var(--bg-color)"}">
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
