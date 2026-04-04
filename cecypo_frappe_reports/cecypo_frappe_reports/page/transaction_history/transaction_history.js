@@ -24,9 +24,6 @@ class TransactionHistoryPage {
 	// ── Layout ────────────────────────────────────────────────────────────────
 
 	_render() {
-		if (!document.getElementById("th-style-override")) {
-			$('<style id="th-style-override">.th-dt-wrapper .dt-cell,.th-dt-wrapper .dt-cell--header{height:auto!important;min-height:0!important;padding:3px 8px!important;line-height:1.4!important;}</style>').appendTo("head");
-		}
 		$(this.page.main).html(`
 			<div class="transaction-history" style="padding:16px">
 				<ul class="nav nav-tabs" style="margin-bottom:16px">
@@ -196,57 +193,55 @@ class TransactionHistoryPage {
 	_render_transaction_panel($grid, rows, type) {
 		const is_purchase = type === "purchase";
 		const total_qty = rows.reduce((s, r) => s + (r.qty || 0), 0);
-		const accent = is_purchase ? "var(--green, #2e7d32)" : "var(--blue, #1565c0)";
+		const accent = is_purchase ? "var(--green)" : "var(--blue)";
 		const label = is_purchase ? __("Purchases") : __("Sales");
 		const bc = this.base_currency;
-
-		let $panel = $(`
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
-					<span style="color:${accent}">${label}</span>
-					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
-				</div>
-				<div style="max-height:280px;overflow-y:auto"><div class="th-dt-wrapper"></div></div>
-			</div>
-		`).appendTo($grid);
-
 		const party_col = is_purchase ? __("Supplier") : __("Customer");
 		const party_key = is_purchase ? "supplier" : "customer";
 		const rate_label = is_purchase ? __("Val. Rate") : __("Base Rate");
 		const rate_key = is_purchase ? "valuation_rate" : "base_rate";
 		const doctype_slug = is_purchase ? "purchase-receipt" : "sales-invoice";
 
-		const columns = [
-			{ name: __("Date"), id: "date", width: 95 },
-			{ name: __("Voucher"), id: "voucher_no", width: 155 },
-			{ name: party_col, id: party_key, width: 155 },
-			{ name: __("Qty"), id: "qty", width: 75, align: "right" },
-			{ name: __("UOM"), id: "uom", width: 60 },
-			{ name: __("Rate"), id: "rate", width: 130, align: "right" },
-			{ name: rate_label, id: rate_key, width: 130, align: "right" },
-		];
+		const th = (label, align) =>
+			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
 
-		// Each cell: {content: displayHTML, value: rawValue} — DataTable uses value for sort, content for display
-		const data = rows.map(r => [
-			{ content: frappe.datetime.str_to_user(r.date), value: r.date },
-			{ content: `<a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a>`, value: r.voucher_no },
-			r[party_key] || "",
-			{ content: format_number(r.qty, null, 2), value: r.qty },
-			r.uom || "",
-			{ content: format_currency(r.rate, r.currency), value: r.rate },
-			{ content: format_currency(r[rate_key], bc), value: r[rate_key] },
-		]);
+		const empty_row = `<tr><td colspan="7" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
 
-		new frappe.DataTable($panel.find(".th-dt-wrapper")[0], {
-			columns,
-			data,
-			noDataMessage: is_purchase ? __("No purchases found") : __("No sales found"),
-			serialNoColumn: false,
-			checkboxColumn: false,
-			inlineFilters: false,
-			clusterize: false,
-			layout: "fluid",
-		});
+		const body = rows.length ? rows.map((r, i) => `
+			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[party_key] || ""}</td>
+				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
+				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
+				<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+			</tr>`).join("") : empty_row;
+
+		$(`
+			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
+					<span style="color:${accent}">${label}</span>
+					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
+				</div>
+				<div style="max-height:280px;overflow-y:auto">
+					<table style="width:100%;border-collapse:collapse;font-size:12px">
+						<thead>
+							<tr style="background:var(--subtle-fg)">
+								${th(__("Date"))}
+								${th(__("Voucher"))}
+								${th(party_col)}
+								${th(__("Qty"), true)}
+								${th(__("UOM"))}
+								${th(__("Rate"), true)}
+								${th(rate_label, true)}
+							</tr>
+						</thead>
+						<tbody>${body}</tbody>
+					</table>
+				</div>
+			</div>
+		`).appendTo($grid);
 	}
 
 	// ── Customer History ──────────────────────────────────────────────────────
