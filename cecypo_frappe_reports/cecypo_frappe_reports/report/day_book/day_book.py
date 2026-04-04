@@ -64,18 +64,11 @@ def get_columns(is_summarized=False, date_label=None):
 				"width": 80,
 			},
 			{
-				"label": _("Debit"),
-				"fieldname": "debit",
+				"label": _("Amount"),
+				"fieldname": "amount",
 				"fieldtype": "Float",
 				"precision": 2,
-				"width": 130,
-			},
-			{
-				"label": _("Credit"),
-				"fieldname": "credit",
-				"fieldtype": "Float",
-				"precision": 2,
-				"width": 130,
+				"width": 150,
 			},
 		]
 
@@ -232,9 +225,29 @@ def get_data(filters):
 	query = _apply_common_filters(query, gle, filters)
 	data = query.run(as_dict=True)
 
+	total_debit = 0.0
+	total_credit = 0.0
 	for row in data:
 		row["debit"] = flt(row["debit"], 2)
 		row["credit"] = flt(row["credit"], 2)
+		total_debit += row["debit"]
+		total_credit += row["credit"]
+
+	if data:
+		data.append({
+			"date": None,
+			"voucher_type": _("Total"),
+			"voucher_no": None,
+			"party_type": None,
+			"party": None,
+			"account": None,
+			"debit": flt(total_debit, 2),
+			"credit": flt(total_credit, 2),
+			"against": None,
+			"remarks": None,
+			"cost_center": None,
+			"bold": 1,
+		})
 
 	return data
 
@@ -248,9 +261,8 @@ def get_summarized_data(filters):
 		.select(
 			date_field.as_("date"),
 			gle.voucher_type,
-			fn.Count(gle.name).as_("count"),
-			fn.Sum(gle.debit).as_("debit"),
-			fn.Sum(gle.credit).as_("credit"),
+			fn.CountDistinct(gle.voucher_no).as_("count"),
+			fn.Sum(gle.debit).as_("amount"),
 		)
 		.where(gle.is_cancelled == 0)
 		.groupby(date_field, gle.voucher_type)
@@ -261,25 +273,53 @@ def get_summarized_data(filters):
 	query = _apply_common_filters(query, gle, filters)
 	data = query.run(as_dict=True)
 
+	total_amount = 0.0
+	total_count = 0
 	for row in data:
-		row["debit"] = flt(row["debit"], 2)
-		row["credit"] = flt(row["credit"], 2)
+		row["amount"] = flt(row["amount"], 2)
+		total_amount += row["amount"]
+		total_count += row.get("count", 0)
+
+	if data:
+		data.append({
+			"date": None,
+			"voucher_type": _("Total"),
+			"count": total_count,
+			"amount": flt(total_amount, 2),
+			"bold": 1,
+		})
 
 	return data
 
 
 def get_report_summary(data, is_summarized=False):
-	if not data:
+	# Exclude the totals row appended at the bottom
+	rows = [d for d in data if not d.get("bold")]
+	if not rows:
 		return []
 
-	total_debit = sum(flt(d.get("debit")) for d in data)
-	total_credit = sum(flt(d.get("credit")) for d in data)
-	net_balance = flt(total_debit - total_credit, 2)
-
 	if is_summarized:
-		total_count = sum(d.get("count", 0) for d in data)
-	else:
-		total_count = len(data)
+		total_amount = sum(flt(d.get("amount")) for d in rows)
+		total_count = sum(d.get("count", 0) for d in rows)
+		return [
+			{
+				"value": total_amount,
+				"label": _("Total Amount"),
+				"datatype": "Float",
+				"indicator": "Blue",
+			},
+			{
+				"value": total_count,
+				"label": _("Transaction Count"),
+				"datatype": "Int",
+				"indicator": "Blue",
+			},
+		]
+
+	total_debit = sum(flt(d.get("debit")) for d in rows)
+	total_credit = sum(flt(d.get("credit")) for d in rows)
+	net_balance = flt(total_debit - total_credit, 2)
+	total_count = len(rows)
 
 	return [
 		{
