@@ -461,6 +461,7 @@ class TransactionHistoryPage {
 			$(m).find(".btn-supp-source").removeClass("active");
 			$(e.currentTarget).addClass("active");
 			this._supp_source = $(e.currentTarget).data("source");
+			$(m).find(".detail-content").removeData("loaded");
 		});
 
 		// Accordion: expand/collapse summary rows
@@ -519,7 +520,7 @@ class TransactionHistoryPage {
 		const rate_key = is_customer ? "base_rate" : "valuation_rate";
 		const bc = this.base_currency;
 		// detail_doctype is passed by the accordion handler so PI vs PR links correctly
-		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-receipt");
+		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-invoice");
 
 		return `
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
