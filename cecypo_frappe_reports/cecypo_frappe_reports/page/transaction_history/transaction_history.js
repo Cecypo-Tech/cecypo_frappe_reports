@@ -10,6 +10,14 @@ frappe.pages["transaction-history"].on_page_load = function (wrapper) {
 	new TransactionHistoryPage(page);
 };
 
+frappe.pages["transaction-history"].on_page_show = function () {
+	$("body").addClass("th-compact");
+};
+
+frappe.pages["transaction-history"].on_page_hide = function () {
+	$("body").removeClass("th-compact");
+};
+
 class TransactionHistoryPage {
 	constructor(page) {
 		this.page = page;
