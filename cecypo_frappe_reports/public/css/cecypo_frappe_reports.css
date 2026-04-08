@@ -5,4 +5,5 @@
 /* Transaction History page — compact line height */
 body.th-compact {
 	line-height: 1em !important;
+	letter-spacing: unset !important;
 }
