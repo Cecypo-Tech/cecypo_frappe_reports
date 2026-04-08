@@ -255,7 +255,7 @@ class TransactionHistoryPage {
 							<a class="nav-link item-tab-link ${i === 0 ? "active" : ""}"
 								href="#" data-item="${item.item_code}"
 								style="font-size:12px;padding:6px 12px">
-								${item.item_name || item.item_code}
+								${item.item_code}
 							</a>
 						</li>
 					`).join("")}
