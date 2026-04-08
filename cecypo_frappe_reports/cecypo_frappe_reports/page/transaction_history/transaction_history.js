@@ -18,8 +18,14 @@ class TransactionHistoryPage {
 		this._cust_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
 		this._supp_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
 		this._supp_source = "pi";
+		this._item_panel = {
+			items: [],      // [{item_code, item_name, checked: true}]
+			source: "pi",   // "pi" | "pr"
+			active_tab: null,
+		};
 		this._render();
 		this._bind_tabs();
+		this._render_item_checklist();
 	}
 
 	// ── Layout ────────────────────────────────────────────────────────────────
@@ -40,15 +46,34 @@ class TransactionHistoryPage {
 				</ul>
 
 				<div class="th-panel" data-panel="item">
-					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
-						<div class="ctrl-item-item" style="min-width:200px"></div>
+					<div class="item-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
 						<div class="ctrl-item-company" style="min-width:180px"></div>
 						<div class="ctrl-item-from" style="min-width:120px"></div>
 						<div class="ctrl-item-to" style="min-width:120px"></div>
 						<div class="ctrl-item-warehouse" style="min-width:160px"></div>
-						<button class="btn btn-primary btn-sm btn-get-item">${__("Get History")}</button>
+						<div class="ctrl-item-source"></div>
 					</div>
-					<div class="th-content item-content"></div>
+					<div class="item-body" style="display:flex;gap:0;align-items:flex-start">
+						<div class="item-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0">
+							<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+								<span style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
+								<button class="btn btn-xs btn-default btn-toggle-item-panel" title="${__("Toggle panel")}" style="padding:1px 6px">☰</button>
+							</div>
+							<div class="item-panel-body">
+								<div class="ctrl-item-group" style="margin-bottom:6px"></div>
+								<div class="ctrl-item-add" style="margin-bottom:8px"></div>
+								<div class="item-checklist" style="max-height:45vh;overflow-y:auto;margin-bottom:8px;border-top:1px solid var(--border-color);padding-top:6px"></div>
+								<div style="display:flex;gap:4px">
+									<button class="btn btn-primary btn-sm btn-run-items" style="flex:1" disabled>${__("Run (0)")}</button>
+									<button class="btn btn-default btn-sm btn-clear-items" title="${__("Clear all")}" style="padding:4px 8px">✕</button>
+								</div>
+							</div>
+						</div>
+						<div class="item-results" style="flex:1;min-width:0">
+							<div class="item-tabs-strip"></div>
+							<div class="th-content item-content"></div>
+						</div>
+					</div>
 				</div>
 
 				<div class="th-panel hidden" data-panel="customer">
@@ -85,12 +110,6 @@ class TransactionHistoryPage {
 			frappe.ui.form.make_control({ parent: $(m).find(parent)[0], df, render_input: true });
 
 		// Item tab
-		this.controls.item = make(".ctrl-item-item", {
-			fieldtype: "Link", options: "Item", fieldname: "item", label: __("Item"), reqd: 1,
-		});
-		// Route through ERPNext item_query so the cecypo_powerpack custom search hook activates
-		this.controls.item.get_query = () => ({ query: "erpnext.controllers.queries.item_query" });
-
 		this.controls.item_company = make(".ctrl-item-company", {
 			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
 		});
@@ -100,6 +119,31 @@ class TransactionHistoryPage {
 			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"),
 		});
 		if (default_company) this.controls.item_company.set_value(default_company);
+
+		// Item source toggle
+		$(m).find(".ctrl-item-source").html(`
+			<div style="display:flex;flex-direction:column;gap:2px">
+				<label style="font-size:11px;color:var(--text-muted)">${__("Source")}</label>
+				<div class="btn-group btn-group-sm">
+					<button class="btn btn-default btn-item-source active" data-source="pi">${__("Purchase Invoice")}</button>
+					<button class="btn btn-default btn-item-source" data-source="pr">${__("Purchase Receipt")}</button>
+				</div>
+			</div>
+		`);
+		$(m).find(`.btn-item-source[data-source="${this._item_panel.source}"]`)
+			.addClass("active")
+			.siblings().removeClass("active");
+
+		// Item panel — group filter
+		this.controls.item_group = make(".ctrl-item-group", {
+			fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
+		});
+
+		// Item panel — search-and-add
+		this.controls.item_add = make(".ctrl-item-add", {
+			fieldtype: "Link", options: "Item", fieldname: "item_add", label: __("Add Item"),
+		});
+		this.controls.item_add.get_query = () => ({ query: "erpnext.controllers.queries.item_query" });
 
 		// Customer tab
 		this.controls.customer = make(".ctrl-cust-customer", {
@@ -135,34 +179,108 @@ class TransactionHistoryPage {
 		`);
 	}
 
+	// ── Item Checklist ────────────────────────────────────────────────────────
+
+	_render_item_checklist() {
+		const m = this.page.main;
+		const $list = $(m).find(".item-checklist");
+		const items = this._item_panel.items;
+
+		if (!items.length) {
+			$list.html(`<span class="text-muted" style="font-size:12px">${__("No items added yet")}</span>`);
+		} else {
+			$list.html(items.map((item, i) => `
+				<div class="item-check-row" style="display:flex;align-items:center;padding:3px 0;border-bottom:1px solid var(--border-color)">
+					<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;flex:1;min-width:0;overflow:hidden">
+						<input type="checkbox" class="item-checkbox" data-idx="${i}" ${item.checked ? "checked" : ""} style="flex-shrink:0">
+						<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.item_name || item.item_code}">${item.item_name || item.item_code}</span>
+					</label>
+					<button class="btn-remove-item" data-idx="${i}"
+						style="border:none;background:none;cursor:pointer;color:var(--text-muted);padding:0 4px;font-size:14px;line-height:1;flex-shrink:0">×</button>
+				</div>
+			`).join(""));
+		}
+
+		const checked = items.filter(it => it.checked).length;
+		$(m).find(".btn-run-items").text(__("Run ({0})", [checked])).prop("disabled", checked === 0);
+	}
+
+	_add_item_to_panel(item_code, item_name) {
+		if (this._item_panel.items.find(it => it.item_code === item_code)) return; // already present
+		this._item_panel.items.push({ item_code, item_name: item_name || item_code, checked: true });
+		this._render_item_checklist();
+	}
+
 	// ── Item History ─────────────────────────────────────────────────────────
 
-	_load_item_history() {
-		let item = this.controls.item.get_value();
-		let company = this.controls.item_company.get_value();
-		if (!item || !company) {
-			frappe.msgprint(__("Item and Company are required"));
-			return;
-		}
-		let $content = $(this.page.main).find(".item-content");
-		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
+	_run_item_history() {
+		const m = this.page.main;
+		const company = this.controls.item_company.get_value();
+		if (!company) { frappe.msgprint(__("Company is required")); return; }
 
-		frappe.call({
-			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
-			args: {
-				item,
-				company,
-				from_date: this.controls.item_from.get_value() || null,
-				to_date: this.controls.item_to.get_value() || null,
-				warehouse: this.controls.item_warehouse.get_value() || null,
-			},
-			callback: (r) => {
-				if (r.message) {
-					$content.empty();
-					this._render_item_history(r.message, $content);
-				}
-			},
+		const checked = this._item_panel.items.filter(it => it.checked);
+		if (!checked.length) return;
+
+		const from_date = this.controls.item_from.get_value() || null;
+		const to_date = this.controls.item_to.get_value() || null;
+		const warehouse = this.controls.item_warehouse.get_value() || null;
+		const source = this._item_panel.source;
+
+		// Reset results
+		this._item_panel.active_tab = checked[0].item_code;
+		this._render_item_tabs(checked);
+
+		// Fire parallel calls — one per checked item
+		checked.forEach(item => {
+			frappe.call({
+				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
+				args: { item: item.item_code, company, from_date, to_date, warehouse, source },
+				callback: (r) => {
+					if (r.message) {
+						this._fill_item_tab(item.item_code, r.message);
+					}
+				},
+			});
 		});
+	}
+
+	_render_item_tabs(items) {
+		const m = this.page.main;
+		const $strip = $(m).find(".item-tabs-strip");
+		const $content = $(m).find(".item-content");
+
+		$strip.html(`
+			<div style="margin-bottom:8px">
+				<ul class="nav nav-tabs" style="margin-bottom:0">
+					${items.map((item, i) => `
+						<li class="nav-item">
+							<a class="nav-link item-tab-link ${i === 0 ? "active" : ""}"
+								href="#" data-item="${item.item_code}"
+								style="font-size:12px;padding:6px 12px">
+								${item.item_name || item.item_code}
+							</a>
+						</li>
+					`).join("")}
+				</ul>
+			</div>
+			<div style="margin-bottom:10px">
+				<input type="search" class="item-results-search form-control form-control-sm"
+					placeholder="${__("Filter rows...")}" style="max-width:280px">
+			</div>
+		`);
+
+		$content.html(items.map((item, i) => `
+			<div class="item-tab-panel ${i === 0 ? "" : "hidden"}" data-item="${item.item_code}">
+				<div class="text-muted" style="padding:20px">${__("Loading...")}</div>
+			</div>
+		`).join(""));
+	}
+
+	_fill_item_tab(item_code, data) {
+		const m = this.page.main;
+		const $panel = $(m).find(`.item-tab-panel[data-item="${item_code}"]`);
+		$panel.empty();
+		this._render_item_history(data, $panel);
 	}
 
 	_render_item_history({ item_details, stock_metrics, purchases, sales }, $container) {
@@ -409,9 +527,31 @@ class TransactionHistoryPage {
 			$(m).find(`[data-panel="${$(e.currentTarget).data("tab")}"]`).removeClass("hidden");
 		});
 
-		$(m).on("click", ".btn-get-item", () => this._load_item_history());
 		$(m).on("click", ".btn-get-customer", () => this._load_customer_history());
 		$(m).on("click", ".btn-get-supplier", () => this._load_supplier_history());
+
+		$(m).on("click", ".btn-run-items", () => this._run_item_history());
+
+		// Item tab switching
+		$(m).on("click", ".item-tab-link", (e) => {
+			e.preventDefault();
+			const item_code = $(e.currentTarget).data("item");
+			$(m).find(".item-tab-link").removeClass("active");
+			$(e.currentTarget).addClass("active");
+			$(m).find(".item-tab-panel").addClass("hidden");
+			$(m).find(`.item-tab-panel[data-item="${item_code}"]`).removeClass("hidden");
+			this._item_panel.active_tab = item_code;
+		});
+
+		// Item results search filter
+		$(m).on("input", ".item-results-search", (e) => {
+			const val = $(e.currentTarget).val().toLowerCase();
+			const $active = $(m).find(".item-tab-panel:not(.hidden)");
+			$active.find("tbody tr").each(function () {
+				const text = $(this).text().toLowerCase();
+				$(this).toggleClass("hidden", val !== "" && !text.includes(val));
+			});
+		});
 
 		// Column sort on accordion summary tables
 		$(m).on("click", ".th-sort-header", (e) => {
@@ -456,12 +596,83 @@ class TransactionHistoryPage {
 			});
 		});
 
+		// Item panel toggle (collapse/expand sidebar)
+		$(m).on("click", ".btn-toggle-item-panel", () => {
+			const $sidebar = $(m).find(".item-panel-sidebar");
+			const collapsed = $sidebar.hasClass("item-panel-collapsed");
+			if (collapsed) {
+				$sidebar.removeClass("item-panel-collapsed").css({ width: "224px", "min-width": "224px", padding: "10px" });
+				$sidebar.find(".item-panel-body").show();
+			} else {
+				$sidebar.addClass("item-panel-collapsed").css({ width: "32px", "min-width": "32px", padding: "4px" });
+				$sidebar.find(".item-panel-body").hide();
+			}
+		});
+
+		// Item source toggle
+		$(m).on("click", ".btn-item-source", (e) => {
+			$(m).find(".btn-item-source").removeClass("active");
+			$(e.currentTarget).addClass("active");
+			this._item_panel.source = $(e.currentTarget).data("source");
+		});
+
 		// Supplier source toggle
 		$(m).on("click", ".btn-supp-source", (e) => {
 			$(m).find(".btn-supp-source").removeClass("active");
 			$(e.currentTarget).addClass("active");
 			this._supp_source = $(e.currentTarget).data("source");
 			$(m).find(".detail-content").removeData("loaded");
+		});
+
+		// Item checklist — checkbox toggle
+		$(m).on("change", ".item-checkbox", (e) => {
+			const idx = parseInt($(e.currentTarget).data("idx"), 10);
+			this._item_panel.items[idx].checked = e.currentTarget.checked;
+			const checked = this._item_panel.items.filter(it => it.checked).length;
+			$(m).find(".btn-run-items").text(__("Run ({0})", [checked])).prop("disabled", checked === 0);
+		});
+
+		// Item checklist — remove item
+		$(m).on("click", ".btn-remove-item", (e) => {
+			e.stopPropagation();
+			const idx = parseInt($(e.currentTarget).data("idx"), 10);
+			if (idx < 0 || idx >= this._item_panel.items.length) return;
+			this._item_panel.items.splice(idx, 1);
+			this._render_item_checklist();
+		});
+
+		// Item checklist — clear all
+		$(m).on("click", ".btn-clear-items", () => {
+			this._item_panel.items = [];
+			this._render_item_checklist();
+			$(m).find(".item-tabs-strip, .item-content").empty();
+		});
+
+		// Item group filter — load items in group
+		$(m).on("change", ".ctrl-item-group input", () => {
+			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
+			if (!group) return;
+			frappe.db.get_list("Item", {
+				filters: { item_group: group, disabled: 0 },
+				fields: ["name", "item_name"],
+				limit: 500,
+			}).then(items => {
+				items.forEach(it => this._add_item_to_panel(it.name, it.item_name));
+			});
+		});
+
+		// Item search-and-add — on select
+		$(m).on("awesomplete-select", ".ctrl-item-add input", (e) => {
+			// Value is set asynchronously; wait one tick
+			setTimeout(() => {
+				const val = this.controls.item_add ? this.controls.item_add.get_value() : null;
+				if (!val) return;
+				// Get item_name for display
+				frappe.db.get_value("Item", val, "item_name").then(r => {
+					this._add_item_to_panel(val, r.message ? r.message.item_name : val);
+					this.controls.item_add.set_value("");
+				});
+			}, 50);
 		});
 
 		// Accordion: expand/collapse summary rows
