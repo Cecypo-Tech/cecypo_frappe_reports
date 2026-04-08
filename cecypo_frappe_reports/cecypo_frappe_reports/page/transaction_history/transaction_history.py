@@ -7,11 +7,11 @@ from pypika import functions as fn
 
 
 @frappe.whitelist()
-def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
+def get_item_history(item, company, from_date=None, to_date=None, warehouse=None, source="pi"):
 	return {
 		"item_details": _get_item_details(item),
 		"stock_metrics": _get_stock_metrics(item, company, warehouse),
-		"purchases": _get_purchase_rows(item, company, from_date, to_date, warehouse),
+		"purchases": _get_purchase_rows(item, company, from_date, to_date, warehouse, source),
 		"sales": _get_sales_rows(item, company, from_date, to_date, warehouse),
 	}
 
@@ -295,34 +295,66 @@ def _get_stock_metrics(item, company, warehouse=None):
 	}
 
 
-def _get_purchase_rows(item, company, from_date, to_date, warehouse):
-	pri = frappe.qb.DocType("Purchase Receipt Item")
-	pr = frappe.qb.DocType("Purchase Receipt")
+def _get_purchase_rows(item, company, from_date, to_date, warehouse, source="pi"):
+	if source == "pi":
+		pii = frappe.qb.DocType("Purchase Invoice Item")
+		pi = frappe.qb.DocType("Purchase Invoice")
 
-	query = (
-		frappe.qb.from_(pri)
-		.inner_join(pr).on(pri.parent == pr.name)
-		.select(
-			pr.posting_date.as_("date"),
-			pri.parent.as_("voucher_no"),
-			pr.supplier,
-			pri.qty,
-			pri.uom,
-			pri.rate,
-			pr.currency,
-			pri.valuation_rate,
+		query = (
+			frappe.qb.from_(pii)
+			.inner_join(pi).on(pii.parent == pi.name)
+			.select(
+				pi.posting_date.as_("date"),
+				pii.parent.as_("voucher_no"),
+				pi.supplier,
+				pii.qty,
+				pii.uom,
+				pii.rate,
+				pi.currency,
+				pii.valuation_rate,
+				pi.status,
+			)
+			.where(pi.docstatus == 1)
+			.where(pi.update_stock == 1)
+			.where(pii.item_code == item)
+			.where(pi.company == company)
+			.orderby(pi.posting_date, order=frappe.qb.desc)
 		)
-		.where(pr.docstatus == 1)
-		.where(pri.item_code == item)
-		.where(pr.company == company)
-		.orderby(pr.posting_date, order=frappe.qb.desc)
-	)
-	if from_date:
-		query = query.where(pr.posting_date >= from_date)
-	if to_date:
-		query = query.where(pr.posting_date <= to_date)
-	if warehouse:
-		query = query.where(pri.warehouse == warehouse)
+		if from_date:
+			query = query.where(pi.posting_date >= from_date)
+		if to_date:
+			query = query.where(pi.posting_date <= to_date)
+		if warehouse:
+			query = query.where(pii.warehouse == warehouse)
+	else:
+		pri = frappe.qb.DocType("Purchase Receipt Item")
+		pr = frappe.qb.DocType("Purchase Receipt")
+
+		query = (
+			frappe.qb.from_(pri)
+			.inner_join(pr).on(pri.parent == pr.name)
+			.select(
+				pr.posting_date.as_("date"),
+				pri.parent.as_("voucher_no"),
+				pr.supplier,
+				pri.qty,
+				pri.uom,
+				pri.rate,
+				pr.currency,
+				pri.valuation_rate,
+				pr.status,
+			)
+			.where(pr.docstatus == 1)
+			.where(pri.item_code == item)
+			.where(pr.company == company)
+			.orderby(pr.posting_date, order=frappe.qb.desc)
+		)
+		if from_date:
+			query = query.where(pr.posting_date >= from_date)
+		if to_date:
+			query = query.where(pr.posting_date <= to_date)
+		if warehouse:
+			query = query.where(pri.warehouse == warehouse)
 
 	rows = query.run(as_dict=True)
 	for r in rows:
@@ -348,6 +380,7 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 			sii.rate,
 			si.currency,
 			sii.base_rate,
+			si.status,
 		)
 		.where(si.docstatus == 1)
 		.where(sii.item_code == item)

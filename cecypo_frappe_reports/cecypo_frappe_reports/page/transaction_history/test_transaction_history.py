@@ -63,7 +63,6 @@ class TestTransactionHistoryPage(unittest.TestCase):
 		)
 		self.assertIsInstance(rows, list)
 
-	@unittest.skip("source param added in Task 4")
 	def test_get_item_history_source_pr(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_item_history,
@@ -74,7 +73,6 @@ class TestTransactionHistoryPage(unittest.TestCase):
 		self.assertIn("sales", result)
 		self.assertIsInstance(result["purchases"], list)
 
-	@unittest.skip("source param added in Task 4")
 	def test_get_item_history_source_pi(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_item_history,
