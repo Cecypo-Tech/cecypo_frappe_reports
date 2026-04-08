@@ -289,29 +289,35 @@ class TransactionHistoryPage {
 	_render_metrics_grid(d, m) {
 		const bc = this.base_currency;
 		const row = (label, value, bold) =>
-			`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-color)">
-				<span style="color:var(--text-muted)">${label}</span>
-				<span${bold ? ' style="font-weight:700"' : ""}>${value ?? "—"}</span>
+			`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-color);gap:8px">
+				<span style="color:var(--text-muted);white-space:nowrap">${label}</span>
+				<span style="text-align:right${bold ? ";font-weight:700" : ""}">${value ?? "—"}</span>
 			</div>`;
 
 		const stock_color = (m.current_stock || 0) > 0 ? "var(--green)" : "var(--red)";
+		const col_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px";
 
 		return `
-			<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:14px 18px">
-				<div>
-					${row(__("Item Name"), d.item_name, true)}
-					${row(__("Brand"), d.brand)}
-					${row(__("Stock UOM"), d.stock_uom)}
-					${row(__("Current Stock"), `<span style="color:${stock_color};font-weight:700">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
-					${row(__("Avg. Stock Rate"), format_currency(m.avg_rate, bc))}
-					${row(__("Stock Value"), format_currency(m.stock_value, bc))}
+			<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+				<div style="${col_style}">
+					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Item Details")}</div>
+					${row(__("Name"), d.item_name, true)}
+					${row(__("Code"), d.item_code)}
+					${row(__("Group"), d.item_group)}
+					${row(__("Brand"), d.brand || "—")}
 				</div>
-				<div>
-					${row(__("Item Code"), d.item_code, true)}
-					${row(__("Item Group"), d.item_group)}
-					${row(__("Valuation Method"), d.valuation_method)}
-					${row(__("Pending PO Qty"), format_number(m.pending_po_qty, null, 2))}
-					${row(__("Pending SO Qty"), format_number(m.pending_so_qty, null, 2))}
+				<div style="${col_style}">
+					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Stock")}</div>
+					${row(__("Current Stock"), `<span style="color:${stock_color};font-weight:700">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
+					${row(__("Stock Value"), format_currency(m.stock_value, bc), true)}
+					${row(__("Avg. Rate"), format_currency(m.avg_rate, bc))}
+					${row(__("UOM"), d.stock_uom || "—")}
+					${row(__("Valuation"), d.valuation_method || "—")}
+				</div>
+				<div style="${col_style}">
+					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Pending Orders")}</div>
+					${row(__("Pending PO"), format_number(m.pending_po_qty, null, 2) + " " + (d.stock_uom || ""))}
+					${row(__("Pending SO"), format_number(m.pending_so_qty, null, 2) + " " + (d.stock_uom || ""))}
 					${row(__("Reorder Level"), m.reorder_level)}
 				</div>
 			</div>`;
@@ -347,11 +353,14 @@ class TransactionHistoryPage {
 
 		$(`
 			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
+				<div class="item-section-header" style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid ${accent};cursor:pointer;user-select:none">
 					<span style="color:${accent}">${label}</span>
-					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
+					<div style="display:flex;align-items:center;gap:8px">
+						<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
+						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
+					</div>
 				</div>
-				<div style="max-height:280px;overflow-y:auto">
+				<div class="item-section-body" style="max-height:280px;overflow-y:auto">
 					<table style="width:100%;border-collapse:collapse;font-size:12px">
 						<thead>
 							<tr style="background:var(--subtle-fg)">
@@ -402,11 +411,14 @@ class TransactionHistoryPage {
 
 		$(`
 			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
+				<div class="item-section-header" style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid ${accent};cursor:pointer;user-select:none">
 					<span style="color:${accent}">${label}</span>
-					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("{0} open", [rows.length])}</span>
+					<div style="display:flex;align-items:center;gap:8px">
+						<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("{0} open", [rows.length])}</span>
+						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
+					</div>
 				</div>
-				<div style="max-height:220px;overflow-y:auto">
+				<div class="item-section-body" style="max-height:220px;overflow-y:auto">
 					<table style="width:100%;border-collapse:collapse;font-size:12px">
 						<thead>
 							<tr style="background:var(--subtle-fg)">
@@ -717,6 +729,20 @@ class TransactionHistoryPage {
 					this.controls.item_add.set_value("");
 				});
 			}, 50);
+		});
+
+		// Item section collapse toggle
+		$(m).on("click", ".item-section-header", (e) => {
+			const $header = $(e.currentTarget);
+			const $body = $header.next(".item-section-body");
+			const $chevron = $header.find(".section-chevron");
+			if ($body.is(":visible")) {
+				$body.hide();
+				$chevron.text("▶");
+			} else {
+				$body.show();
+				$chevron.text("▼");
+			}
 		});
 
 		// Accordion: expand/collapse summary rows
