@@ -17,6 +17,7 @@ class TransactionHistoryPage {
 		this.controls = {};
 		this._cust_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
 		this._supp_state = { rows: [], party: null, company: null, sort_key: "total_amount", sort_dir: "desc" };
+		this._supp_source = "pi";
 		this._render();
 		this._bind_tabs();
 	}
@@ -67,6 +68,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-supp-company" style="min-width:180px"></div>
 						<div class="ctrl-supp-from" style="min-width:120px"></div>
 						<div class="ctrl-supp-to" style="min-width:120px"></div>
+						<div class="ctrl-supp-source"></div>
 						<button class="btn btn-primary btn-sm btn-get-supplier">${__("Get History")}</button>
 					</div>
 					<div class="th-content supplier-content"></div>
@@ -120,6 +122,17 @@ class TransactionHistoryPage {
 		this.controls.supp_from = make(".ctrl-supp-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
 		this.controls.supp_to = make(".ctrl-supp-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
 		if (default_company) this.controls.supp_company.set_value(default_company);
+
+		// Supplier source toggle
+		$(m).find(".ctrl-supp-source").html(`
+			<div style="display:flex;flex-direction:column;gap:2px">
+				<label style="font-size:11px;color:var(--text-muted)">${__("Source")}</label>
+				<div class="btn-group btn-group-sm">
+					<button class="btn btn-default btn-supp-source active" data-source="pi">${__("Purchase Invoice")}</button>
+					<button class="btn btn-default btn-supp-source" data-source="pr">${__("Purchase Receipt")}</button>
+				</div>
+			</div>
+		`);
 	}
 
 	// ── Item History ─────────────────────────────────────────────────────────
@@ -293,6 +306,7 @@ class TransactionHistoryPage {
 				company,
 				from_date: this.controls.supp_from.get_value() || null,
 				to_date: this.controls.supp_to.get_value() || null,
+				source: this._supp_source,
 			},
 			callback: (r) => {
 				if (r.message != null) {
@@ -330,8 +344,16 @@ class TransactionHistoryPage {
 				style="padding:5px 8px;text-align:${align || "left"};color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent};cursor:pointer;white-space:nowrap;user-select:none">
 				${label}${sort_icon(key)}
 			</th>`;
+		const th_plain = (label) => `
+			<th style="padding:5px 8px;color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent}">
+				${label}
+			</th>`;
 
 		return `
+			<div style="margin-bottom:8px">
+				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
+					placeholder="${__("Filter items...")}" style="max-width:280px">
+			</div>
 			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
@@ -343,6 +365,7 @@ class TransactionHistoryPage {
 						${th(rate_col, rate_key, "right")}
 						${th(__("Total Amount"), "total_amount", "right")}
 						${th(date_col, date_key)}
+						${th_plain(__("Status"))}
 					</tr>
 				</thead>
 				<tbody>
@@ -358,9 +381,10 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
 							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[date_key] ? frappe.datetime.str_to_user(r[date_key]) : "—"}</td>
+							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._summary_status_pill(r.overdue_count || 0, r.unpaid_count || 0)}</td>
 						</tr>
 						<tr class="detail-row hidden" data-detail-for="${r.item_code}">
-							<td colspan="8" style="padding:0;border-bottom:2px solid var(--border-color)">
+							<td colspan="9" style="padding:0;border-bottom:2px solid var(--border-color)">
 								<div class="detail-content" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
@@ -414,6 +438,31 @@ class TransactionHistoryPage {
 			$content.html(this._render_party_summary(sorted, party_type, state.party, state.company, state));
 		});
 
+		// Party search filter
+		$(m).on("input", ".party-search", (e) => {
+			const val = $(e.currentTarget).val().toLowerCase();
+			const party_type = $(e.currentTarget).data("party-type");
+			const $table = $(m).find(`table[data-party-type="${party_type}"]`);
+			$table.find(".summary-row").each(function () {
+				const text = $(this).text().toLowerCase();
+				const $detail = $(this).next(".detail-row");
+				if (val === "" || text.includes(val)) {
+					$(this).removeClass("hidden");
+				} else {
+					$(this).addClass("hidden");
+					$detail.addClass("hidden");
+					$(this).find("td:first").text("▶");
+				}
+			});
+		});
+
+		// Supplier source toggle
+		$(m).on("click", ".btn-supp-source", (e) => {
+			$(m).find(".btn-supp-source").removeClass("active");
+			$(e.currentTarget).addClass("active");
+			this._supp_source = $(e.currentTarget).data("source");
+		});
+
 		// Accordion: expand/collapse summary rows
 		$(m).on("click", ".summary-row", (e) => {
 			if ($(e.target).is("a")) return;
@@ -449,9 +498,13 @@ class TransactionHistoryPage {
 					company,
 					from_date: from_date || null,
 					to_date: to_date || null,
+					source: party_type === "supplier" ? this._supp_source : undefined,
 				},
 				callback: (r) => {
-					let html = this._render_detail_rows(r.message || [], is_customer);
+					const detail_doctype = is_customer
+						? "sales-invoice"
+						: (this._supp_source === "pr" ? "purchase-receipt" : "purchase-invoice");
+					let html = this._render_detail_rows(r.message || [], is_customer, detail_doctype);
 					$detail.find(".detail-content").html(html).data("loaded", true);
 				},
 			});
@@ -494,6 +547,14 @@ class TransactionHistoryPage {
 						</tr>`).join("")}
 				</tbody>
 			</table>`;
+	}
+
+	_summary_status_pill(overdue_count, unpaid_count) {
+		if (overdue_count > 0)
+			return `<span class="indicator-pill red" style="font-size:10px">${overdue_count} ${__("Overdue")}</span>`;
+		if (unpaid_count > 0)
+			return `<span class="indicator-pill yellow" style="font-size:10px">${unpaid_count} ${__("Unpaid")}</span>`;
+		return `<span class="indicator-pill green" style="font-size:10px">${__("All Paid")}</span>`;
 	}
 
 	_status_pill(status) {
