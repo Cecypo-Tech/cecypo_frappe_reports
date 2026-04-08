@@ -18,6 +18,8 @@ def get_item_history(item, company, from_date=None, to_date=None, warehouse=None
 
 @frappe.whitelist()
 def get_customer_history(customer, company, from_date=None, to_date=None):
+	from pypika import Case
+
 	sii = frappe.qb.DocType("Sales Invoice Item")
 	si = frappe.qb.DocType("Sales Invoice")
 
@@ -32,6 +34,8 @@ def get_customer_history(customer, company, from_date=None, to_date=None):
 			fn.Avg(sii.base_rate).as_("avg_rate"),
 			fn.Sum(sii.base_amount).as_("total_amount"),
 			fn.Max(si.posting_date).as_("last_sale"),
+			fn.Sum(Case().when(si.status == "Overdue", 1).else_(0)).as_("overdue_count"),
+			fn.Sum(Case().when(si.status.isin(["Unpaid", "Overdue", "Partly Paid"]), 1).else_(0)).as_("unpaid_count"),
 		)
 		.where(si.docstatus == 1)
 		.where(si.customer == customer)
@@ -49,6 +53,8 @@ def get_customer_history(customer, company, from_date=None, to_date=None):
 		r["total_qty"] = flt(r["total_qty"], 2)
 		r["avg_rate"] = flt(r["avg_rate"], 2)
 		r["total_amount"] = flt(r["total_amount"], 2)
+		r["overdue_count"] = r.get("overdue_count") or 0
+		r["unpaid_count"] = r.get("unpaid_count") or 0
 	return rows
 
 
@@ -68,6 +74,7 @@ def get_customer_item_transactions(customer, item_code, company, from_date=None,
 			sii.rate,
 			si.currency,
 			sii.base_rate,
+			si.status,
 		)
 		.where(si.docstatus == 1)
 		.where(si.customer == customer)
@@ -89,68 +96,133 @@ def get_customer_item_transactions(customer, item_code, company, from_date=None,
 
 
 @frappe.whitelist()
-def get_supplier_history(supplier, company, from_date=None, to_date=None):
-	pri = frappe.qb.DocType("Purchase Receipt Item")
-	pr = frappe.qb.DocType("Purchase Receipt")
+def get_supplier_history(supplier, company, from_date=None, to_date=None, source="pi"):
+	from pypika import Case
 
-	query = (
-		frappe.qb.from_(pri)
-		.inner_join(pr).on(pri.parent == pr.name)
-		.select(
-			pri.item_code,
-			pri.item_name,
-			fn.Sum(pri.qty).as_("total_qty"),
-			fn.Count(pr.name).distinct().as_("receipt_count"),
-			fn.Avg(pri.valuation_rate).as_("avg_valuation_rate"),
-			fn.Sum(pri.base_amount).as_("total_amount"),
-			fn.Max(pr.posting_date).as_("last_purchase"),
+	if source == "pi":
+		pii = frappe.qb.DocType("Purchase Invoice Item")
+		pi = frappe.qb.DocType("Purchase Invoice")
+
+		query = (
+			frappe.qb.from_(pii)
+			.inner_join(pi).on(pii.parent == pi.name)
+			.select(
+				pii.item_code,
+				pii.item_name,
+				fn.Sum(pii.qty).as_("total_qty"),
+				fn.Count(pi.name).distinct().as_("receipt_count"),
+				fn.Avg(pii.valuation_rate).as_("avg_valuation_rate"),
+				fn.Sum(pii.base_amount).as_("total_amount"),
+				fn.Max(pi.posting_date).as_("last_purchase"),
+				fn.Sum(Case().when(pi.status == "Overdue", 1).else_(0)).as_("overdue_count"),
+				fn.Sum(Case().when(pi.status.isin(["Unpaid", "Overdue", "Partly Paid"]), 1).else_(0)).as_("unpaid_count"),
+			)
+			.where(pi.docstatus == 1)
+			.where(pi.update_stock == 1)
+			.where(pi.supplier == supplier)
+			.where(pi.company == company)
+			.groupby(pii.item_code, pii.item_name)
+			.orderby(fn.Sum(pii.base_amount), order=frappe.qb.desc)
 		)
-		.where(pr.docstatus == 1)
-		.where(pr.supplier == supplier)
-		.where(pr.company == company)
-		.groupby(pri.item_code, pri.item_name)
-		.orderby(fn.Sum(pri.base_amount), order=frappe.qb.desc)
-	)
-	if from_date:
-		query = query.where(pr.posting_date >= from_date)
-	if to_date:
-		query = query.where(pr.posting_date <= to_date)
+		if from_date:
+			query = query.where(pi.posting_date >= from_date)
+		if to_date:
+			query = query.where(pi.posting_date <= to_date)
+	else:
+		pri = frappe.qb.DocType("Purchase Receipt Item")
+		pr = frappe.qb.DocType("Purchase Receipt")
+
+		query = (
+			frappe.qb.from_(pri)
+			.inner_join(pr).on(pri.parent == pr.name)
+			.select(
+				pri.item_code,
+				pri.item_name,
+				fn.Sum(pri.qty).as_("total_qty"),
+				fn.Count(pr.name).distinct().as_("receipt_count"),
+				fn.Avg(pri.valuation_rate).as_("avg_valuation_rate"),
+				fn.Sum(pri.base_amount).as_("total_amount"),
+				fn.Max(pr.posting_date).as_("last_purchase"),
+				fn.Sum(Case().when(pr.status == "To Bill", 1).else_(0)).as_("unpaid_count"),
+			)
+			.where(pr.docstatus == 1)
+			.where(pr.supplier == supplier)
+			.where(pr.company == company)
+			.groupby(pri.item_code, pri.item_name)
+			.orderby(fn.Sum(pri.base_amount), order=frappe.qb.desc)
+		)
+		if from_date:
+			query = query.where(pr.posting_date >= from_date)
+		if to_date:
+			query = query.where(pr.posting_date <= to_date)
 
 	rows = query.run(as_dict=True)
 	for r in rows:
 		r["total_qty"] = flt(r["total_qty"], 2)
 		r["avg_valuation_rate"] = flt(r["avg_valuation_rate"], 2)
 		r["total_amount"] = flt(r["total_amount"], 2)
+		r["overdue_count"] = r.get("overdue_count") or 0
+		r["unpaid_count"] = r.get("unpaid_count") or 0
 	return rows
 
 
 @frappe.whitelist()
-def get_supplier_item_transactions(supplier, item_code, company, from_date=None, to_date=None):
-	pri = frappe.qb.DocType("Purchase Receipt Item")
-	pr = frappe.qb.DocType("Purchase Receipt")
+def get_supplier_item_transactions(supplier, item_code, company, from_date=None, to_date=None, source="pi"):
+	if source == "pi":
+		pii = frappe.qb.DocType("Purchase Invoice Item")
+		pi = frappe.qb.DocType("Purchase Invoice")
 
-	query = (
-		frappe.qb.from_(pri)
-		.inner_join(pr).on(pri.parent == pr.name)
-		.select(
-			pr.posting_date.as_("date"),
-			pri.parent.as_("voucher_no"),
-			pri.qty,
-			pri.uom,
-			pri.rate,
-			pr.currency,
-			pri.valuation_rate,
+		query = (
+			frappe.qb.from_(pii)
+			.inner_join(pi).on(pii.parent == pi.name)
+			.select(
+				pi.posting_date.as_("date"),
+				pii.parent.as_("voucher_no"),
+				pii.qty,
+				pii.uom,
+				pii.rate,
+				pi.currency,
+				pii.valuation_rate,
+				pi.status,
+			)
+			.where(pi.docstatus == 1)
+			.where(pi.update_stock == 1)
+			.where(pi.supplier == supplier)
+			.where(pii.item_code == item_code)
+			.where(pi.company == company)
+			.orderby(pi.posting_date, order=frappe.qb.desc)
 		)
-		.where(pr.docstatus == 1)
-		.where(pr.supplier == supplier)
-		.where(pri.item_code == item_code)
-		.where(pr.company == company)
-		.orderby(pr.posting_date, order=frappe.qb.desc)
-	)
-	if from_date:
-		query = query.where(pr.posting_date >= from_date)
-	if to_date:
-		query = query.where(pr.posting_date <= to_date)
+		if from_date:
+			query = query.where(pi.posting_date >= from_date)
+		if to_date:
+			query = query.where(pi.posting_date <= to_date)
+	else:
+		pri = frappe.qb.DocType("Purchase Receipt Item")
+		pr = frappe.qb.DocType("Purchase Receipt")
+
+		query = (
+			frappe.qb.from_(pri)
+			.inner_join(pr).on(pri.parent == pr.name)
+			.select(
+				pr.posting_date.as_("date"),
+				pri.parent.as_("voucher_no"),
+				pri.qty,
+				pri.uom,
+				pri.rate,
+				pr.currency,
+				pri.valuation_rate,
+				pr.status,
+			)
+			.where(pr.docstatus == 1)
+			.where(pr.supplier == supplier)
+			.where(pri.item_code == item_code)
+			.where(pr.company == company)
+			.orderby(pr.posting_date, order=frappe.qb.desc)
+		)
+		if from_date:
+			query = query.where(pr.posting_date >= from_date)
+		if to_date:
+			query = query.where(pr.posting_date <= to_date)
 
 	rows = query.run(as_dict=True)
 	for r in rows:
