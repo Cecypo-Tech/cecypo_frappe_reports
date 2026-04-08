@@ -20,7 +20,6 @@ class TransactionHistoryPage {
 		this._supp_source = "pi";
 		this._item_panel = {
 			items: [],      // [{item_code, item_name, checked: true}]
-			source: "pi",   // "pi" | "pr"
 			active_tab: null,
 		};
 		this._render();
@@ -51,7 +50,6 @@ class TransactionHistoryPage {
 						<div class="ctrl-item-from" style="min-width:120px"></div>
 						<div class="ctrl-item-to" style="min-width:120px"></div>
 						<div class="ctrl-item-warehouse" style="min-width:160px"></div>
-						<div class="ctrl-item-source"></div>
 					</div>
 					<div class="item-body" style="display:flex;gap:0;align-items:flex-start">
 						<div class="item-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0">
@@ -120,20 +118,6 @@ class TransactionHistoryPage {
 		});
 		if (default_company) this.controls.item_company.set_value(default_company);
 
-		// Item source toggle
-		$(m).find(".ctrl-item-source").html(`
-			<div style="display:flex;flex-direction:column;gap:2px">
-				<label style="font-size:11px;color:var(--text-muted)">${__("Source")}</label>
-				<div class="btn-group btn-group-sm">
-					<button class="btn btn-default btn-item-source active" data-source="pi">${__("Purchase Invoice")}</button>
-					<button class="btn btn-default btn-item-source" data-source="pr">${__("Purchase Receipt")}</button>
-				</div>
-			</div>
-		`);
-		$(m).find(`.btn-item-source[data-source="${this._item_panel.source}"]`)
-			.addClass("active")
-			.siblings().removeClass("active");
-
 		// Item panel — group filter
 		this.controls.item_group = make(".ctrl-item-group", {
 			fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
@@ -143,7 +127,6 @@ class TransactionHistoryPage {
 		this.controls.item_add = make(".ctrl-item-add", {
 			fieldtype: "Link", options: "Item", fieldname: "item_add", label: __("Add Item"),
 		});
-		this.controls.item_add.get_query = () => ({ query: "erpnext.controllers.queries.item_query" });
 
 		// Customer tab
 		this.controls.customer = make(".ctrl-cust-customer", {
@@ -167,16 +150,14 @@ class TransactionHistoryPage {
 		this.controls.supp_to = make(".ctrl-supp-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
 		if (default_company) this.controls.supp_company.set_value(default_company);
 
-		// Supplier source toggle
-		$(m).find(".ctrl-supp-source").html(`
-			<div style="display:flex;flex-direction:column;gap:2px">
-				<label style="font-size:11px;color:var(--text-muted)">${__("Source")}</label>
-				<div class="btn-group btn-group-sm">
-					<button class="btn btn-default btn-supp-source active" data-source="pi">${__("Purchase Invoice")}</button>
-					<button class="btn btn-default btn-supp-source" data-source="pr">${__("Purchase Receipt")}</button>
-				</div>
-			</div>
-		`);
+		// Supplier source select
+		this.controls.supp_source = make(".ctrl-supp-source", {
+			fieldtype: "Select",
+			fieldname: "supp_source",
+			label: __("Source"),
+			options: "Purchase Invoice\nPurchase Receipt",
+		});
+		this.controls.supp_source.set_value("Purchase Invoice");
 	}
 
 	// ── Item Checklist ────────────────────────────────────────────────────────
@@ -224,7 +205,6 @@ class TransactionHistoryPage {
 		const from_date = this.controls.item_from.get_value() || null;
 		const to_date = this.controls.item_to.get_value() || null;
 		const warehouse = this.controls.item_warehouse.get_value() || null;
-		const source = this._item_panel.source;
 
 		// Generation counter: discard callbacks from superseded runs
 		this._run_generation = (this._run_generation || 0) + 1;
@@ -242,7 +222,7 @@ class TransactionHistoryPage {
 		checked.forEach(item => {
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
-				args: { item: item.item_code, company, from_date, to_date, warehouse, source },
+				args: { item: item.item_code, company, from_date, to_date, warehouse },
 				callback: (r) => {
 					if (gen !== this._run_generation) return; // stale — discard
 					if (r.message) {
@@ -297,11 +277,13 @@ class TransactionHistoryPage {
 		this._render_item_history(data, $panel);
 	}
 
-	_render_item_history({ item_details, stock_metrics, purchases, sales }, $container) {
+	_render_item_history({ item_details, stock_metrics, purchases, sales, open_po, open_so }, $container) {
 		$container.append(this._render_metrics_grid(item_details, stock_metrics));
 		let $grid = $(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">`).appendTo($container);
 		this._render_transaction_panel($grid, purchases, "purchase");
 		this._render_transaction_panel($grid, sales, "sale");
+		this._render_open_orders_panel($grid, open_po || [], "po");
+		this._render_open_orders_panel($grid, open_so || [], "so");
 	}
 
 	_render_metrics_grid(d, m) {
@@ -345,10 +327,6 @@ class TransactionHistoryPage {
 		const party_key = is_purchase ? "supplier" : "customer";
 		const rate_label = is_purchase ? __("Val. Rate") : __("Base Rate");
 		const rate_key = is_purchase ? "valuation_rate" : "base_rate";
-		// For purchases: use PI link unless source is PR. _item_panel may not exist yet (safe fallback to PI).
-		const doctype_slug = is_purchase
-			? (this._item_panel && this._item_panel.source === "pr" ? "purchase-receipt" : "purchase-invoice")
-			: "sales-invoice";
 
 		const th = (label, align) =>
 			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
@@ -358,7 +336,7 @@ class TransactionHistoryPage {
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${is_purchase ? (r.doctype === "Purchase Receipt" ? "purchase-receipt" : "purchase-invoice") : "sales-invoice"}/${r.voucher_no}">${r.voucher_no}</a></td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[party_key] || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
@@ -385,6 +363,61 @@ class TransactionHistoryPage {
 								${th(__("Rate"), true)}
 								${th(rate_label, true)}
 								${th(__("Status"))}
+							</tr>
+						</thead>
+						<tbody>${body}</tbody>
+					</table>
+				</div>
+			</div>
+		`).appendTo($grid);
+	}
+
+	_render_open_orders_panel($grid, rows, type) {
+		const is_po = type === "po";
+		const accent = is_po ? "var(--green)" : "var(--blue)";
+		const label = is_po ? __("Open Purchase Orders") : __("Open Sales Orders");
+		const party_col = is_po ? __("Supplier") : __("Customer");
+		const party_key = is_po ? "supplier" : "customer";
+		const received_col = is_po ? __("Received") : __("Delivered");
+		const received_key = is_po ? "received_qty" : "delivered_qty";
+		const bc = this.base_currency;
+
+		const th = (lbl, align) =>
+			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${lbl}</th>`;
+
+		const doctype_slug = is_po ? "purchase-order" : "sales-order";
+		const empty_row = `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${is_po ? __("No open purchase orders") : __("No open sales orders")}</td></tr>`;
+
+		const body = rows.length ? rows.map((r, i) => `
+			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[party_key] || ""}</td>
+				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.ordered_qty, null, 2)}</td>
+				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r[received_key], null, 2)}</td>
+				<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_number(r.pending_qty, null, 2)}</td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
+				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
+			</tr>`).join("") : empty_row;
+
+		$(`
+			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;border-bottom:2px solid ${accent}">
+					<span style="color:${accent}">${label}</span>
+					<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("{0} open", [rows.length])}</span>
+				</div>
+				<div style="max-height:220px;overflow-y:auto">
+					<table style="width:100%;border-collapse:collapse;font-size:12px">
+						<thead>
+							<tr style="background:var(--subtle-fg)">
+								${th(__("Date"))}
+								${th(__("Order No."))}
+								${th(party_col)}
+								${th(__("Ordered"), true)}
+								${th(received_col, true)}
+								${th(__("Pending"), true)}
+								${th(__("UOM"))}
+								${th(__("Rate"), true)}
 							</tr>
 						</thead>
 						<tbody>${body}</tbody>
@@ -430,6 +463,9 @@ class TransactionHistoryPage {
 		if (!supplier || !company) { frappe.msgprint(__("Supplier and Company are required")); return; }
 		let $content = $(this.page.main).find(".supplier-content");
 		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
+
+		const source_val = this.controls.supp_source ? this.controls.supp_source.get_value() : "Purchase Invoice";
+		this._supp_source = source_val === "Purchase Receipt" ? "pr" : "pi";
 
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_supplier_history",
@@ -484,7 +520,7 @@ class TransactionHistoryPage {
 		return `
 			<div style="margin-bottom:8px">
 				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
-					placeholder="${__("Filter items...")}" style="max-width:280px">
+					placeholder="${__("Filter rows...")}" style="max-width:280px">
 			</div>
 			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
@@ -592,7 +628,7 @@ class TransactionHistoryPage {
 			$content.html(this._render_party_summary(sorted, party_type, state.party, state.company, state));
 		});
 
-		// Party search filter
+		// Party search filter — filters summary rows and detail rows
 		$(m).on("input", ".party-search", (e) => {
 			const val = $(e.currentTarget).val().toLowerCase();
 			const party_type = $(e.currentTarget).data("party-type");
@@ -602,12 +638,21 @@ class TransactionHistoryPage {
 				const $detail = $(this).next(".detail-row");
 				if (val === "" || text.includes(val)) {
 					$(this).removeClass("hidden");
+					// Also filter within any loaded detail rows
+					$detail.find("tbody tr").each(function () {
+						const detail_text = $(this).text().toLowerCase();
+						$(this).toggleClass("hidden", val !== "" && !detail_text.includes(val));
+					});
 				} else {
 					$(this).addClass("hidden");
 					$detail.addClass("hidden");
 					$(this).find("td:first").text("▶");
 				}
 			});
+			// Clear any detail row filters when search is cleared
+			if (!val) {
+				$table.find(".detail-content tbody tr").removeClass("hidden");
+			}
 		});
 
 		// Item panel toggle (collapse/expand sidebar)
@@ -621,21 +666,6 @@ class TransactionHistoryPage {
 				$sidebar.addClass("item-panel-collapsed").css({ width: "32px", "min-width": "32px", padding: "4px" });
 				$sidebar.find(".item-panel-body").hide();
 			}
-		});
-
-		// Item source toggle
-		$(m).on("click", ".btn-item-source", (e) => {
-			$(m).find(".btn-item-source").removeClass("active");
-			$(e.currentTarget).addClass("active");
-			this._item_panel.source = $(e.currentTarget).data("source");
-		});
-
-		// Supplier source toggle
-		$(m).on("click", ".btn-supp-source", (e) => {
-			$(m).find(".btn-supp-source").removeClass("active");
-			$(e.currentTarget).addClass("active");
-			this._supp_source = $(e.currentTarget).data("source");
-			$(m).find(".detail-content").removeData("loaded");
 		});
 
 		// Item checklist — checkbox toggle
