@@ -226,6 +226,14 @@ class TransactionHistoryPage {
 		const warehouse = this.controls.item_warehouse.get_value() || null;
 		const source = this._item_panel.source;
 
+		// Generation counter: discard callbacks from superseded runs
+		this._run_generation = (this._run_generation || 0) + 1;
+		const gen = this._run_generation;
+
+		// Disable Run button while in flight
+		$(m).find(".btn-run-items").prop("disabled", true);
+		let pending = checked.length;
+
 		// Reset results
 		this._item_panel.active_tab = checked[0].item_code;
 		this._render_item_tabs(checked);
@@ -236,8 +244,14 @@ class TransactionHistoryPage {
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
 				args: { item: item.item_code, company, from_date, to_date, warehouse, source },
 				callback: (r) => {
+					if (gen !== this._run_generation) return; // stale — discard
 					if (r.message) {
 						this._fill_item_tab(item.item_code, r.message);
+					}
+					if (--pending === 0) {
+						// Re-enable button only when all responses have arrived
+						const checked_count = this._item_panel.items.filter(it => it.checked).length;
+						$(m).find(".btn-run-items").prop("disabled", checked_count === 0);
 					}
 				},
 			});
