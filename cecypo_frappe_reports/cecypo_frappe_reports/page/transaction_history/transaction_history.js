@@ -123,10 +123,14 @@ class TransactionHistoryPage {
 			fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
 		});
 
-		// Item panel — search-and-add
+		// Item panel — search-and-add (get_query filters by selected group, if any)
 		this.controls.item_add = make(".ctrl-item-add", {
 			fieldtype: "Link", options: "Item", fieldname: "item_add", label: __("Add Item"),
 		});
+		this.controls.item_add.get_query = () => {
+			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
+			return group ? { filters: { item_group: group } } : {};
+		};
 
 		// Customer tab
 		this.controls.customer = make(".ctrl-cust-customer", {
@@ -704,17 +708,19 @@ class TransactionHistoryPage {
 			$(m).find(".item-tabs-strip, .item-content").empty();
 		});
 
-		// Item group filter — load items in group
-		$(m).on("change", ".ctrl-item-group input", () => {
-			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
-			if (!group) return;
-			frappe.db.get_list("Item", {
-				filters: { item_group: group, disabled: 0 },
-				fields: ["name", "item_name"],
-				limit: 500,
-			}).then(items => {
-				items.forEach(it => this._add_item_to_panel(it.name, it.item_name));
-			});
+		// Item group filter — load items in group when selected
+		$(m).on("awesomplete-select", ".ctrl-item-group input", () => {
+			setTimeout(() => {
+				const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
+				if (!group) return;
+				frappe.db.get_list("Item", {
+					filters: { item_group: group, disabled: 0 },
+					fields: ["name", "item_name"],
+					limit: 500,
+				}).then(items => {
+					items.forEach(it => this._add_item_to_panel(it.name, it.item_name));
+				});
+			}, 50);
 		});
 
 		// Item search-and-add — on select
