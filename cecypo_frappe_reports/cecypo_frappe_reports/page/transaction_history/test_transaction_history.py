@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Cecypo and contributors
 # For license information, please see license.txt
 
-import frappe
 import unittest
 
 
@@ -85,21 +84,16 @@ class TestTransactionHistoryPage(unittest.TestCase):
 		self.assertIsInstance(result["purchases"], list)
 
 	def test_summary_rows_have_status_aggregate_fields(self):
-		"""Verify new fields exist on summary rows when data is present."""
+		"""Verify the query runs without error with the new aggregate fields in the SELECT."""
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_customer_history,
 		)
 
-		# With nonexistent customer we get [] — verify the query runs without error
 		rows = get_customer_history(customer="__nonexistent__", company="_Test Company")
 		self.assertIsInstance(rows, list)
-		# If rows were present, each would have overdue_count and unpaid_count
-		for row in rows:
-			self.assertIn("overdue_count", row)
-			self.assertIn("unpaid_count", row)
 
 	def test_detail_rows_have_status_field(self):
-		"""Verify status field exists on detail rows when data is present."""
+		"""Verify the query runs without error with status added to the SELECT."""
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_customer_item_transactions,
 		)
@@ -108,5 +102,3 @@ class TestTransactionHistoryPage(unittest.TestCase):
 			customer="__nonexistent__", item_code="__nonexistent__", company="_Test Company"
 		)
 		self.assertIsInstance(rows, list)
-		for row in rows:
-			self.assertIn("status", row)
