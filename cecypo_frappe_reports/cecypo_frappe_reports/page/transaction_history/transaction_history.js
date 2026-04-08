@@ -200,12 +200,15 @@ class TransactionHistoryPage {
 		const party_key = is_purchase ? "supplier" : "customer";
 		const rate_label = is_purchase ? __("Val. Rate") : __("Base Rate");
 		const rate_key = is_purchase ? "valuation_rate" : "base_rate";
-		const doctype_slug = is_purchase ? "purchase-receipt" : "sales-invoice";
+		// For purchases: use PI link unless source is PR. _item_panel may not exist yet (safe fallback to PI).
+		const doctype_slug = is_purchase
+			? (this._item_panel && this._item_panel.source === "pr" ? "purchase-receipt" : "purchase-invoice")
+			: "sales-invoice";
 
 		const th = (label, align) =>
 			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
 
-		const empty_row = `<tr><td colspan="7" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
+		const empty_row = `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
 
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
@@ -216,6 +219,7 @@ class TransactionHistoryPage {
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
 				<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
 			</tr>`).join("") : empty_row;
 
 		$(`
@@ -235,6 +239,7 @@ class TransactionHistoryPage {
 								${th(__("UOM"))}
 								${th(__("Rate"), true)}
 								${th(rate_label, true)}
+								${th(__("Status"))}
 							</tr>
 						</thead>
 						<tbody>${body}</tbody>
@@ -453,14 +458,15 @@ class TransactionHistoryPage {
 		});
 	}
 
-	_render_detail_rows(rows, is_customer) {
+	_render_detail_rows(rows, is_customer, detail_doctype) {
 		if (!rows.length)
 			return `<span class="text-muted">${__("No transactions found")}</span>`;
 
 		const rate_label = is_customer ? __("Base Rate") : __("Val. Rate");
 		const rate_key = is_customer ? "base_rate" : "valuation_rate";
 		const bc = this.base_currency;
-		const doctype_slug = is_customer ? "sales-invoice" : "purchase-receipt";
+		// detail_doctype is passed by the accordion handler so PI vs PR links correctly
+		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-receipt");
 
 		return `
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
@@ -472,6 +478,7 @@ class TransactionHistoryPage {
 						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>
+						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Status")}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -483,8 +490,26 @@ class TransactionHistoryPage {
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
 							<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
 						</tr>`).join("")}
 				</tbody>
 			</table>`;
+	}
+
+	_status_pill(status) {
+		const map = {
+			"Paid": "green",
+			"Completed": "green",
+			"Partly Paid": "orange",
+			"Unpaid": "yellow",
+			"To Bill": "yellow",
+			"Overdue": "red",
+			"Return": "gray",
+			"Return Issued": "gray",
+			"Credit Note Issued": "gray",
+			"Debit Note Issued": "gray",
+		};
+		const colour = map[status] || "gray";
+		return `<span class="indicator-pill ${colour}" style="font-size:10px;white-space:nowrap">${__(status || "—")}</span>`;
 	}
 }
