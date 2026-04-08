@@ -68,7 +68,7 @@ class TestTransactionHistoryPage(unittest.TestCase):
 			get_item_history,
 		)
 
-		result = get_item_history(item="__nonexistent__", company="_Test Company", source="pr")
+		result = get_item_history(item="__nonexistent__", company="_Test Company")
 		self.assertIn("purchases", result)
 		self.assertIn("sales", result)
 		self.assertIsInstance(result["purchases"], list)
@@ -78,7 +78,7 @@ class TestTransactionHistoryPage(unittest.TestCase):
 			get_item_history,
 		)
 
-		result = get_item_history(item="__nonexistent__", company="_Test Company", source="pi")
+		result = get_item_history(item="__nonexistent__", company="_Test Company")
 		self.assertIn("purchases", result)
 		self.assertIn("sales", result)
 		self.assertIsInstance(result["purchases"], list)

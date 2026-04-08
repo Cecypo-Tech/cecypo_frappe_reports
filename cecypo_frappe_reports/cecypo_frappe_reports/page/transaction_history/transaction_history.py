@@ -7,12 +7,14 @@ from pypika import functions as fn
 
 
 @frappe.whitelist()
-def get_item_history(item, company, from_date=None, to_date=None, warehouse=None, source="pi"):
+def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
 	return {
 		"item_details": _get_item_details(item),
 		"stock_metrics": _get_stock_metrics(item, company, warehouse),
-		"purchases": _get_purchase_rows(item, company, from_date, to_date, warehouse, source),
+		"purchases": _get_purchase_rows(item, company, from_date, to_date, warehouse),
 		"sales": _get_sales_rows(item, company, from_date, to_date, warehouse),
+		"open_po": _get_open_purchase_orders(item, company, warehouse),
+		"open_so": _get_open_sales_orders(item, company, warehouse),
 	}
 
 
@@ -295,72 +297,154 @@ def _get_stock_metrics(item, company, warehouse=None):
 	}
 
 
-def _get_purchase_rows(item, company, from_date, to_date, warehouse, source="pi"):
-	if source == "pi":
-		pii = frappe.qb.DocType("Purchase Invoice Item")
-		pi = frappe.qb.DocType("Purchase Invoice")
-
-		query = (
-			frappe.qb.from_(pii)
-			.inner_join(pi).on(pii.parent == pi.name)
-			.select(
-				pi.posting_date.as_("date"),
-				pii.parent.as_("voucher_no"),
-				pi.supplier,
-				pii.qty,
-				pii.uom,
-				pii.rate,
-				pi.currency,
-				pii.valuation_rate,
-				pi.status,
-			)
-			.where(pi.docstatus == 1)
-			.where(pi.update_stock == 1)
-			.where(pii.item_code == item)
-			.where(pi.company == company)
-			.orderby(pi.posting_date, order=frappe.qb.desc)
+def _get_purchase_rows(item, company, from_date, to_date, warehouse):
+	# Purchase Invoice (stock-updating only)
+	pii = frappe.qb.DocType("Purchase Invoice Item")
+	pi = frappe.qb.DocType("Purchase Invoice")
+	pi_query = (
+		frappe.qb.from_(pii)
+		.inner_join(pi).on(pii.parent == pi.name)
+		.select(
+			pi.posting_date.as_("date"),
+			pii.parent.as_("voucher_no"),
+			pi.supplier,
+			pii.qty,
+			pii.uom,
+			pii.rate,
+			pi.currency,
+			pii.valuation_rate,
+			pi.status,
 		)
-		if from_date:
-			query = query.where(pi.posting_date >= from_date)
-		if to_date:
-			query = query.where(pi.posting_date <= to_date)
-		if warehouse:
-			query = query.where(pii.warehouse == warehouse)
-	else:
-		pri = frappe.qb.DocType("Purchase Receipt Item")
-		pr = frappe.qb.DocType("Purchase Receipt")
-
-		query = (
-			frappe.qb.from_(pri)
-			.inner_join(pr).on(pri.parent == pr.name)
-			.select(
-				pr.posting_date.as_("date"),
-				pri.parent.as_("voucher_no"),
-				pr.supplier,
-				pri.qty,
-				pri.uom,
-				pri.rate,
-				pr.currency,
-				pri.valuation_rate,
-				pr.status,
-			)
-			.where(pr.docstatus == 1)
-			.where(pri.item_code == item)
-			.where(pr.company == company)
-			.orderby(pr.posting_date, order=frappe.qb.desc)
-		)
-		if from_date:
-			query = query.where(pr.posting_date >= from_date)
-		if to_date:
-			query = query.where(pr.posting_date <= to_date)
-		if warehouse:
-			query = query.where(pri.warehouse == warehouse)
-
-	rows = query.run(as_dict=True)
-	for r in rows:
+		.where(pi.docstatus == 1)
+		.where(pi.update_stock == 1)
+		.where(pii.item_code == item)
+		.where(pi.company == company)
+	)
+	if from_date:
+		pi_query = pi_query.where(pi.posting_date >= from_date)
+	if to_date:
+		pi_query = pi_query.where(pi.posting_date <= to_date)
+	if warehouse:
+		pi_query = pi_query.where(pii.warehouse == warehouse)
+	pi_rows = pi_query.run(as_dict=True)
+	for r in pi_rows:
+		r["doctype"] = "Purchase Invoice"
 		r["qty"] = flt(r["qty"], 2)
 		r["rate"] = flt(r["rate"], 2)
 		r["valuation_rate"] = flt(r["valuation_rate"], 2)
+
+	# Purchase Receipt
+	pri = frappe.qb.DocType("Purchase Receipt Item")
+	pr = frappe.qb.DocType("Purchase Receipt")
+	pr_query = (
+		frappe.qb.from_(pri)
+		.inner_join(pr).on(pri.parent == pr.name)
+		.select(
+			pr.posting_date.as_("date"),
+			pri.parent.as_("voucher_no"),
+			pr.supplier,
+			pri.qty,
+			pri.uom,
+			pri.rate,
+			pr.currency,
+			pri.valuation_rate,
+			pr.status,
+		)
+		.where(pr.docstatus == 1)
+		.where(pri.item_code == item)
+		.where(pr.company == company)
+	)
+	if from_date:
+		pr_query = pr_query.where(pr.posting_date >= from_date)
+	if to_date:
+		pr_query = pr_query.where(pr.posting_date <= to_date)
+	if warehouse:
+		pr_query = pr_query.where(pri.warehouse == warehouse)
+	pr_rows = pr_query.run(as_dict=True)
+	for r in pr_rows:
+		r["doctype"] = "Purchase Receipt"
+		r["qty"] = flt(r["qty"], 2)
+		r["rate"] = flt(r["rate"], 2)
+		r["valuation_rate"] = flt(r["valuation_rate"], 2)
+
+	rows = pi_rows + pr_rows
+	rows.sort(key=lambda r: r.get("date") or "", reverse=True)
+	return rows
+
+
+def _get_open_purchase_orders(item, company, warehouse=None):
+	poi = frappe.qb.DocType("Purchase Order Item")
+	po = frappe.qb.DocType("Purchase Order")
+
+	query = (
+		frappe.qb.from_(poi)
+		.inner_join(po).on(poi.parent == po.name)
+		.select(
+			po.transaction_date.as_("date"),
+			poi.parent.as_("voucher_no"),
+			po.supplier,
+			poi.qty.as_("ordered_qty"),
+			poi.received_qty,
+			(poi.qty - poi.received_qty).as_("pending_qty"),
+			poi.rate,
+			poi.uom,
+			po.currency,
+			po.status,
+		)
+		.where(po.docstatus == 1)
+		.where(po.status.notin(["Closed", "Cancelled"]))
+		.where(poi.item_code == item)
+		.where(po.company == company)
+		.where(poi.qty > poi.received_qty)
+		.orderby(po.transaction_date, order=frappe.qb.desc)
+	)
+	if warehouse:
+		query = query.where(poi.warehouse == warehouse)
+
+	rows = query.run(as_dict=True)
+	for r in rows:
+		r["ordered_qty"] = flt(r["ordered_qty"], 2)
+		r["received_qty"] = flt(r["received_qty"], 2)
+		r["pending_qty"] = flt(r["pending_qty"], 2)
+		r["rate"] = flt(r["rate"], 2)
+	return rows
+
+
+def _get_open_sales_orders(item, company, warehouse=None):
+	soi = frappe.qb.DocType("Sales Order Item")
+	so = frappe.qb.DocType("Sales Order")
+
+	query = (
+		frappe.qb.from_(soi)
+		.inner_join(so).on(soi.parent == so.name)
+		.select(
+			so.transaction_date.as_("date"),
+			soi.parent.as_("voucher_no"),
+			so.customer,
+			soi.qty.as_("ordered_qty"),
+			soi.delivered_qty,
+			(soi.qty - soi.delivered_qty).as_("pending_qty"),
+			soi.rate,
+			soi.uom,
+			so.currency,
+			so.status,
+		)
+		.where(so.docstatus == 1)
+		.where(so.status.notin(["Closed", "Cancelled"]))
+		.where(soi.item_code == item)
+		.where(so.company == company)
+		.where(soi.qty > soi.delivered_qty)
+		.orderby(so.transaction_date, order=frappe.qb.desc)
+	)
+	if warehouse:
+		query = query.where(soi.warehouse == warehouse)
+
+	rows = query.run(as_dict=True)
+	for r in rows:
+		r["ordered_qty"] = flt(r["ordered_qty"], 2)
+		r["delivered_qty"] = flt(r["delivered_qty"], 2)
+		r["pending_qty"] = flt(r["pending_qty"], 2)
+		r["rate"] = flt(r["rate"], 2)
 	return rows
 
 
