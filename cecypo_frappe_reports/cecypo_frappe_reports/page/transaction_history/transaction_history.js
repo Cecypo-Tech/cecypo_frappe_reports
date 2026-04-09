@@ -137,7 +137,10 @@ class TransactionHistoryPage {
 		});
 		this.controls.item_add.get_query = () => {
 			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
-			return group ? { filters: { item_group: group } } : {};
+			return {
+				query: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
+				filters: group ? { item_group: group } : {},
+			};
 		};
 
 		// Customer tab
