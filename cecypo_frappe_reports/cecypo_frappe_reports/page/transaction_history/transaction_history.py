@@ -468,7 +468,7 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 	query = (
 		frappe.qb.from_(sii)
 		.inner_join(si).on(sii.parent == si.name)
-		.left_join(cust).on(si.customer == cust.name)
+		.left_join(cust).on(si.customer == cust.name)  # LEFT keeps invoices whose Customer was deleted
 		.select(
 			si.posting_date.as_("date"),
 			sii.parent.as_("voucher_no"),
