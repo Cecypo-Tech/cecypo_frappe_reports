@@ -234,6 +234,215 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 	return rows
 
 
+@frappe.whitelist()
+def get_receivables(company, as_of_date, customer=None):
+	"""AR aging summary — one row per customer with outstanding_amount > 0."""
+	from collections import defaultdict
+	from frappe.utils import getdate
+
+	as_of = getdate(as_of_date)
+	si = frappe.qb.DocType("Sales Invoice")
+	cust_doc = frappe.qb.DocType("Customer")
+
+	query = (
+		frappe.qb.from_(si)
+		.left_join(cust_doc).on(si.customer == cust_doc.name)
+		.select(
+			si.customer,
+			cust_doc.customer_group,
+			si.name,
+			si.grand_total,
+			si.outstanding_amount,
+			si.due_date,
+			si.posting_date,
+		)
+		.where(si.docstatus == 1)
+		.where(si.outstanding_amount > 0)
+		.where(si.company == company)
+	)
+	if customer:
+		query = query.where(si.customer == customer)
+	rows = query.run(as_dict=True)
+
+	# Last payment date per customer
+	pe = frappe.qb.DocType("Payment Entry")
+	pay_q = (
+		frappe.qb.from_(pe)
+		.select(pe.party.as_("customer"), fn.Max(pe.posting_date).as_("last_payment"))
+		.where(pe.docstatus == 1)
+		.where(pe.payment_type == "Receive")
+		.where(pe.party_type == "Customer")
+		.where(pe.company == company)
+		.groupby(pe.party)
+	)
+	if customer:
+		pay_q = pay_q.where(pe.party == customer)
+	last_payments = {r.customer: r.last_payment for r in pay_q.run(as_dict=True)}
+
+	agg = defaultdict(lambda: {
+		"customer": "", "customer_group": "",
+		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
+		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
+	})
+	for r in rows:
+		a = agg[r.customer]
+		a["customer"] = r.customer
+		a["customer_group"] = r.customer_group or ""
+		gt = flt(r.grand_total, 2)
+		oa = flt(r.outstanding_amount, 2)
+		a["total_invoiced"] = flt(a["total_invoiced"] + gt, 2)
+		a["total_paid"] = flt(a["total_paid"] + (gt - oa), 2)
+		a["outstanding"] = flt(a["outstanding"] + oa, 2)
+		due = getdate(r.due_date) if r.due_date else getdate(r.posting_date)
+		bucket = _calculate_aging_bucket(due, as_of)
+		a[bucket] = flt(a[bucket] + oa, 2)
+
+	result = []
+	for cust_name, data in agg.items():
+		data["last_payment"] = last_payments.get(cust_name)
+		result.append(data)
+	result.sort(key=lambda x: x["outstanding"], reverse=True)
+	return result
+
+
+@frappe.whitelist()
+def get_receivables_detail(customer, company, as_of_date):
+	"""Individual outstanding SI rows for accordion drill-down."""
+	from frappe.utils import getdate
+
+	as_of = getdate(as_of_date)
+	si = frappe.qb.DocType("Sales Invoice")
+	rows = (
+		frappe.qb.from_(si)
+		.select(
+			si.posting_date.as_("date"),
+			si.name.as_("voucher_no"),
+			si.grand_total,
+			(si.grand_total - si.outstanding_amount).as_("paid"),
+			si.outstanding_amount,
+			si.due_date,
+			si.status,
+		)
+		.where(si.docstatus == 1)
+		.where(si.outstanding_amount > 0)
+		.where(si.customer == customer)
+		.where(si.company == company)
+		.orderby(si.due_date)
+		.run(as_dict=True)
+	)
+	for r in rows:
+		due = getdate(r.due_date) if r.due_date else getdate(r.date)
+		r["days_overdue"] = max(0, (as_of - due).days)
+		r["grand_total"] = flt(r["grand_total"], 2)
+		r["paid"] = flt(r["paid"], 2)
+		r["outstanding_amount"] = flt(r["outstanding_amount"], 2)
+	return rows
+
+
+@frappe.whitelist()
+def get_payables(company, as_of_date, supplier=None):
+	"""AP aging summary — one row per supplier with outstanding_amount > 0."""
+	from collections import defaultdict
+	from frappe.utils import getdate
+
+	as_of = getdate(as_of_date)
+	pi = frappe.qb.DocType("Purchase Invoice")
+	supp_doc = frappe.qb.DocType("Supplier")
+
+	query = (
+		frappe.qb.from_(pi)
+		.left_join(supp_doc).on(pi.supplier == supp_doc.name)
+		.select(
+			pi.supplier,
+			supp_doc.supplier_group,
+			pi.name,
+			pi.grand_total,
+			pi.outstanding_amount,
+			pi.due_date,
+			pi.posting_date,
+		)
+		.where(pi.docstatus == 1)
+		.where(pi.outstanding_amount > 0)
+		.where(pi.company == company)
+	)
+	if supplier:
+		query = query.where(pi.supplier == supplier)
+	rows = query.run(as_dict=True)
+
+	pe = frappe.qb.DocType("Payment Entry")
+	pay_q = (
+		frappe.qb.from_(pe)
+		.select(pe.party.as_("supplier"), fn.Max(pe.posting_date).as_("last_payment"))
+		.where(pe.docstatus == 1)
+		.where(pe.payment_type == "Pay")
+		.where(pe.party_type == "Supplier")
+		.where(pe.company == company)
+		.groupby(pe.party)
+	)
+	if supplier:
+		pay_q = pay_q.where(pe.party == supplier)
+	last_payments = {r.supplier: r.last_payment for r in pay_q.run(as_dict=True)}
+
+	agg = defaultdict(lambda: {
+		"supplier": "", "supplier_group": "",
+		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
+		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
+	})
+	for r in rows:
+		a = agg[r.supplier]
+		a["supplier"] = r.supplier
+		a["supplier_group"] = r.supplier_group or ""
+		gt = flt(r.grand_total, 2)
+		oa = flt(r.outstanding_amount, 2)
+		a["total_invoiced"] = flt(a["total_invoiced"] + gt, 2)
+		a["total_paid"] = flt(a["total_paid"] + (gt - oa), 2)
+		a["outstanding"] = flt(a["outstanding"] + oa, 2)
+		due = getdate(r.due_date) if r.due_date else getdate(r.posting_date)
+		bucket = _calculate_aging_bucket(due, as_of)
+		a[bucket] = flt(a[bucket] + oa, 2)
+
+	result = []
+	for supp_name, data in agg.items():
+		data["last_payment"] = last_payments.get(supp_name)
+		result.append(data)
+	result.sort(key=lambda x: x["outstanding"], reverse=True)
+	return result
+
+
+@frappe.whitelist()
+def get_payables_detail(supplier, company, as_of_date):
+	"""Individual outstanding PI rows for accordion drill-down."""
+	from frappe.utils import getdate
+
+	as_of = getdate(as_of_date)
+	pi = frappe.qb.DocType("Purchase Invoice")
+	rows = (
+		frappe.qb.from_(pi)
+		.select(
+			pi.posting_date.as_("date"),
+			pi.name.as_("voucher_no"),
+			pi.grand_total,
+			(pi.grand_total - pi.outstanding_amount).as_("paid"),
+			pi.outstanding_amount,
+			pi.due_date,
+			pi.status,
+		)
+		.where(pi.docstatus == 1)
+		.where(pi.outstanding_amount > 0)
+		.where(pi.supplier == supplier)
+		.where(pi.company == company)
+		.orderby(pi.due_date)
+		.run(as_dict=True)
+	)
+	for r in rows:
+		due = getdate(r.due_date) if r.due_date else getdate(r.date)
+		r["days_overdue"] = max(0, (as_of - due).days)
+		r["grand_total"] = flt(r["grand_total"], 2)
+		r["paid"] = flt(r["paid"], 2)
+		r["outstanding_amount"] = flt(r["outstanding_amount"], 2)
+	return rows
+
+
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 def _calculate_aging_bucket(due_date, as_of_date):
