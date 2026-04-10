@@ -259,6 +259,7 @@ def get_receivables(company, as_of_date, customer=None):
 		.where(si.docstatus == 1)
 		.where(si.outstanding_amount > 0)
 		.where(si.company == company)
+		.where(si.posting_date <= as_of)
 	)
 	if customer:
 		query = query.where(si.customer == customer)
@@ -273,6 +274,7 @@ def get_receivables(company, as_of_date, customer=None):
 		.where(pe.payment_type == "Receive")
 		.where(pe.party_type == "Customer")
 		.where(pe.company == company)
+		.where(pe.posting_date <= as_of)
 		.groupby(pe.party)
 	)
 	if customer:
@@ -327,6 +329,7 @@ def get_receivables_detail(customer, company, as_of_date):
 		.where(si.outstanding_amount > 0)
 		.where(si.customer == customer)
 		.where(si.company == company)
+		.where(si.posting_date <= as_of)
 		.orderby(si.due_date)
 		.run(as_dict=True)
 	)
@@ -364,6 +367,7 @@ def get_payables(company, as_of_date, supplier=None):
 		.where(pi.docstatus == 1)
 		.where(pi.outstanding_amount > 0)
 		.where(pi.company == company)
+		.where(pi.posting_date <= as_of)
 	)
 	if supplier:
 		query = query.where(pi.supplier == supplier)
@@ -377,6 +381,7 @@ def get_payables(company, as_of_date, supplier=None):
 		.where(pe.payment_type == "Pay")
 		.where(pe.party_type == "Supplier")
 		.where(pe.company == company)
+		.where(pe.posting_date <= as_of)
 		.groupby(pe.party)
 	)
 	if supplier:
@@ -431,6 +436,7 @@ def get_payables_detail(supplier, company, as_of_date):
 		.where(pi.outstanding_amount > 0)
 		.where(pi.supplier == supplier)
 		.where(pi.company == company)
+		.where(pi.posting_date <= as_of)
 		.orderby(pi.due_date)
 		.run(as_dict=True)
 	)
@@ -446,7 +452,10 @@ def get_payables_detail(supplier, company, as_of_date):
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 def _calculate_aging_bucket(due_date, as_of_date):
-	"""Return the aging bucket key for an invoice due on due_date as of as_of_date."""
+	"""Return the aging bucket key for an invoice due on due_date as of as_of_date.
+
+	Not-yet-due invoices (days < 0) fall into bucket_0_30 — the UI labels this "Current (0–30)".
+	"""
 	days = (as_of_date - due_date).days
 	if days <= 30:
 		return "bucket_0_30"
