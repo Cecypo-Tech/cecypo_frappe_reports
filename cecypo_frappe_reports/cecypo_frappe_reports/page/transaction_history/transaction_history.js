@@ -167,7 +167,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-pricing-price-list" style="min-width:160px"></div>
 					</div>
 					<div class="pricing-body" style="display:flex;gap:0;align-items:flex-start">
-						<div class="pricing-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0">
+						<div class="pricing-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0;position:relative;z-index:1">
 							<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
 								<span class="pricing-panel-label" style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
 								<button class="btn btn-xs btn-default btn-toggle-pricing-panel" title="${__("Toggle panel")}" style="padding:1px 6px">☰</button>
