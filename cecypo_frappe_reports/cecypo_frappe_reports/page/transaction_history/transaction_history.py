@@ -236,6 +236,18 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 
 # ── Private helpers ──────────────────────────────────────────────────────────
 
+def _calculate_aging_bucket(due_date, as_of_date):
+	"""Return the aging bucket key for an invoice due on due_date as of as_of_date."""
+	days = (as_of_date - due_date).days
+	if days <= 30:
+		return "bucket_0_30"
+	elif days <= 60:
+		return "bucket_31_60"
+	elif days <= 90:
+		return "bucket_61_90"
+	return "bucket_90_plus"
+
+
 def _get_item_details(item):
 	return frappe.db.get_value(
 		"Item",
