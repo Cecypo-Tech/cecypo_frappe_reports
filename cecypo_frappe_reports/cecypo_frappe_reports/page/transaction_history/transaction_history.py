@@ -449,6 +449,64 @@ def get_payables_detail(supplier, company, as_of_date):
 	return rows
 
 
+@frappe.whitelist()
+def get_item_prices(item_code):
+	"""Returns all Item Price records (selling + buying) for an item."""
+	ip = frappe.qb.DocType("Item Price")
+	rows = (
+		frappe.qb.from_(ip)
+		.select(
+			ip.name,
+			ip.price_list,
+			ip.selling,
+			ip.buying,
+			ip.price_list_rate,
+			ip.currency,
+			ip.valid_from,
+			ip.valid_upto,
+		)
+		.where(ip.item_code == item_code)
+		.where((ip.selling == 1) | (ip.buying == 1))
+		.orderby(ip.selling, order=frappe.qb.desc)
+		.orderby(ip.price_list)
+		.run(as_dict=True)
+	)
+	for r in rows:
+		r["price_list_rate"] = flt(r["price_list_rate"], 2)
+		r["type"] = "Selling" if r.get("selling") else "Buying"
+	return rows
+
+
+@frappe.whitelist()
+def update_item_price(item_code, price_list, rate):
+	"""Upsert an Item Price record. Requires Item Price write permission."""
+	frappe.has_permission("Item Price", "write", throw=True)
+
+	existing = frappe.db.get_value(
+		"Item Price",
+		{"item_code": item_code, "price_list": price_list},
+		"name",
+	)
+	if existing:
+		doc = frappe.get_doc("Item Price", existing)
+		doc.price_list_rate = flt(rate, 2)
+		doc.save()
+	else:
+		pl = frappe.db.get_value("Price List", price_list, ["selling", "buying"], as_dict=True) or {}
+		doc = frappe.get_doc({
+			"doctype": "Item Price",
+			"item_code": item_code,
+			"price_list": price_list,
+			"price_list_rate": flt(rate, 2),
+			"selling": pl.get("selling", 0),
+			"buying": pl.get("buying", 0),
+		})
+		doc.insert()
+
+	frappe.db.commit()
+	return {"name": doc.name, "price_list_rate": doc.price_list_rate}
+
+
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 def _calculate_aging_bucket(due_date, as_of_date):
