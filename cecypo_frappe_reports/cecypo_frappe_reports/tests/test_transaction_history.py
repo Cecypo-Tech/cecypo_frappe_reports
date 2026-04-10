@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import unittest
-from datetime import date
 
 
 class TestCalculateAgingBucket(unittest.TestCase):
