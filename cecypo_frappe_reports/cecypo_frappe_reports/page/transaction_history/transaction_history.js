@@ -1606,6 +1606,7 @@ class TransactionHistoryPage {
 <div class="total">Total Outstanding: ${format_number(total, null, 2)}</div>
 </body></html>`;
 		const win = window.open("", "_blank");
+		if (!win) { frappe.msgprint(__("Popup was blocked. Please allow popups for this site and try again.")); return; }
 		win.document.write(html);
 		win.document.close();
 		win.print();
