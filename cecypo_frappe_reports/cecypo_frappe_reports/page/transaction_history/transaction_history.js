@@ -30,14 +30,39 @@ class TransactionHistoryPage {
 			items: [],      // [{item_code, item_name, checked: true}]
 			active_tab: null,
 		};
+		this._pricing_panel = {
+			items: [],
+			active_tab: null,
+		};
 		this._render();
 		this._bind_tabs();
 		this._render_item_checklist();
+		this._render_pricing_checklist();
 	}
 
 	// ── Layout ────────────────────────────────────────────────────────────────
 
+	_inject_styles() {
+		if (document.getElementById("th-responsive-styles")) return;
+		const style = document.createElement("style");
+		style.id = "th-responsive-styles";
+		style.textContent = `
+			@media (max-width: 767px) {
+				.item-body { flex-direction: column !important; }
+				.item-panel-sidebar {
+					width: 100% !important;
+					min-width: 0 !important;
+					margin-right: 0 !important;
+					margin-bottom: 12px;
+				}
+				.item-results-grid { grid-template-columns: 1fr !important; }
+			}
+		`;
+		document.head.appendChild(style);
+	}
+
 	_render() {
+		this._inject_styles();
 		$(this.page.main).html(`
 			<div class="transaction-history" style="padding:16px">
 				<ul class="nav nav-tabs" style="margin-bottom:16px">
@@ -50,6 +75,15 @@ class TransactionHistoryPage {
 					<li class="nav-item">
 						<a class="nav-link" href="#" data-tab="supplier">${__("Supplier History")}</a>
 					</li>
+					<li class="nav-item">
+						<a class="nav-link" href="#" data-tab="receivables">${__("Receivables")}</a>
+					</li>
+					<li class="nav-item">
+						<a class="nav-link" href="#" data-tab="payables">${__("Payables")}</a>
+					</li>
+					<li class="nav-item">
+						<a class="nav-link" href="#" data-tab="pricing">${__("Pricing")}</a>
+					</li>
 				</ul>
 
 				<div class="th-panel" data-panel="item">
@@ -60,9 +94,9 @@ class TransactionHistoryPage {
 						<div class="ctrl-item-warehouse" style="min-width:160px"></div>
 					</div>
 					<div class="item-body" style="display:flex;gap:0;align-items:flex-start">
-						<div class="item-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0">
+						<div class="item-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0;position:relative;z-index:1">
 							<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-								<span style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
+								<span class="item-panel-label" style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
 								<button class="btn btn-xs btn-default btn-toggle-item-panel" title="${__("Toggle panel")}" style="padding:1px 6px">☰</button>
 							</div>
 							<div class="item-panel-body">
@@ -103,6 +137,56 @@ class TransactionHistoryPage {
 						<button class="btn btn-primary btn-sm btn-get-supplier">${__("Get History")}</button>
 					</div>
 					<div class="th-content supplier-content"></div>
+				</div>
+
+				<div class="th-panel hidden" data-panel="receivables">
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+						<div class="ctrl-recv-company" style="min-width:180px"></div>
+						<div class="ctrl-recv-as-of" style="min-width:140px"></div>
+						<div class="ctrl-recv-customer" style="min-width:220px"></div>
+						<button class="btn btn-primary btn-sm btn-get-receivables">${__("Get")}</button>
+					</div>
+					<div class="th-content receivables-content"></div>
+				</div>
+
+				<div class="th-panel hidden" data-panel="payables">
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+						<div class="ctrl-pay-company" style="min-width:180px"></div>
+						<div class="ctrl-pay-as-of" style="min-width:140px"></div>
+						<div class="ctrl-pay-supplier" style="min-width:220px"></div>
+						<button class="btn btn-primary btn-sm btn-get-payables">${__("Get")}</button>
+					</div>
+					<div class="th-content payables-content"></div>
+				</div>
+
+				<div class="th-panel hidden" data-panel="pricing">
+					<div class="pricing-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+						<div class="ctrl-pricing-company" style="min-width:180px"></div>
+						<div class="ctrl-pricing-from" style="min-width:120px"></div>
+						<div class="ctrl-pricing-to" style="min-width:120px"></div>
+						<div class="ctrl-pricing-price-list" style="min-width:160px"></div>
+					</div>
+					<div class="pricing-body" style="display:flex;gap:0;align-items:flex-start">
+						<div class="pricing-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0">
+							<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+								<span class="pricing-panel-label" style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
+								<button class="btn btn-xs btn-default btn-toggle-pricing-panel" title="${__("Toggle panel")}" style="padding:1px 6px">☰</button>
+							</div>
+							<div class="pricing-panel-body">
+								<div class="ctrl-pricing-group" style="margin-bottom:6px"></div>
+								<div class="ctrl-pricing-add" style="margin-bottom:8px"></div>
+								<div class="pricing-checklist" style="max-height:45vh;overflow-y:auto;margin-bottom:8px;border-top:1px solid var(--border-color);padding-top:6px"></div>
+								<div style="display:flex;gap:4px">
+									<button class="btn btn-primary btn-sm btn-run-pricing" style="flex:1" disabled>${__("Run (0)")}</button>
+									<button class="btn btn-default btn-sm btn-clear-pricing" title="${__("Clear all")}" style="padding:4px 8px">✕</button>
+								</div>
+							</div>
+						</div>
+						<div class="pricing-results" style="flex:1;min-width:0">
+							<div class="pricing-tabs-strip"></div>
+							<div class="th-content pricing-content"></div>
+						</div>
+					</div>
 				</div>
 			</div>
 		`);
@@ -173,6 +257,61 @@ class TransactionHistoryPage {
 			options: "Purchase Invoice\nPurchase Receipt",
 		});
 		this.controls.supp_source.set_value("Purchase Invoice");
+
+		// Receivables tab
+		const today = frappe.datetime.get_today();
+		this.controls.recv_company = make(".ctrl-recv-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
+		this.controls.recv_as_of = make(".ctrl-recv-as-of", {
+			fieldtype: "Date", fieldname: "as_of_date", label: __("As Of Date"),
+		});
+		this.controls.recv_customer = make(".ctrl-recv-customer", {
+			fieldtype: "Link", options: "Customer", fieldname: "customer", label: __("Customer"),
+		});
+		if (default_company) this.controls.recv_company.set_value(default_company);
+		this.controls.recv_as_of.set_value(today);
+
+		// Payables tab
+		this.controls.pay_company = make(".ctrl-pay-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
+		this.controls.pay_as_of = make(".ctrl-pay-as-of", {
+			fieldtype: "Date", fieldname: "as_of_date", label: __("As Of Date"),
+		});
+		this.controls.pay_supplier = make(".ctrl-pay-supplier", {
+			fieldtype: "Link", options: "Supplier", fieldname: "supplier", label: __("Supplier"),
+		});
+		if (default_company) this.controls.pay_company.set_value(default_company);
+		this.controls.pay_as_of.set_value(today);
+
+		// Pricing tab
+		this.controls.pricing_company = make(".ctrl-pricing-company", {
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+		});
+		this.controls.pricing_from = make(".ctrl-pricing-from", {
+			fieldtype: "Date", fieldname: "from_date", label: __("From Date"),
+		});
+		this.controls.pricing_to = make(".ctrl-pricing-to", {
+			fieldtype: "Date", fieldname: "to_date", label: __("To Date"),
+		});
+		this.controls.pricing_price_list = make(".ctrl-pricing-price-list", {
+			fieldtype: "Link", options: "Price List", fieldname: "price_list", label: __("Price List"),
+		});
+		this.controls.pricing_group = make(".ctrl-pricing-group", {
+			fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
+		});
+		this.controls.pricing_add = make(".ctrl-pricing-add", {
+			fieldtype: "Link", options: "Item", fieldname: "item_add", label: __("Add Item"),
+		});
+		this.controls.pricing_add.get_query = () => {
+			const group = this.controls.pricing_group ? this.controls.pricing_group.get_value() : null;
+			return {
+				query: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
+				filters: group ? { item_group: group } : {},
+			};
+		};
+		if (default_company) this.controls.pricing_company.set_value(default_company);
 	}
 
 	// ── Item Checklist ────────────────────────────────────────────────────────
@@ -205,6 +344,36 @@ class TransactionHistoryPage {
 		if (this._item_panel.items.find(it => it.item_code === item_code)) return; // already present
 		this._item_panel.items.push({ item_code, item_name: item_name || item_code, checked: true });
 		this._render_item_checklist();
+	}
+
+	_render_pricing_checklist() {
+		const m = this.page.main;
+		const $list = $(m).find(".pricing-checklist");
+		const items = this._pricing_panel.items;
+
+		if (!items.length) {
+			$list.html(`<span class="text-muted" style="font-size:12px">${__("No items added yet")}</span>`);
+		} else {
+			$list.html(items.map((item, i) => `
+				<div class="pricing-check-row" style="display:flex;align-items:center;padding:3px 0;border-bottom:1px solid var(--border-color)">
+					<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;flex:1;min-width:0;overflow:hidden">
+						<input type="checkbox" class="pricing-checkbox" data-idx="${i}" ${item.checked ? "checked" : ""} style="flex-shrink:0">
+						<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.item_name || item.item_code}">${item.item_name || item.item_code}</span>
+					</label>
+					<button class="btn-remove-pricing-item" data-idx="${i}"
+						style="border:none;background:none;cursor:pointer;color:var(--text-muted);padding:0 4px;font-size:14px;line-height:1;flex-shrink:0">×</button>
+				</div>
+			`).join(""));
+		}
+
+		const checked = items.filter(it => it.checked).length;
+		$(m).find(".btn-run-pricing").text(__("Run ({0})", [checked])).prop("disabled", checked === 0);
+	}
+
+	_add_item_to_pricing_panel(item_code, item_name) {
+		if (this._pricing_panel.items.find(it => it.item_code === item_code)) return;
+		this._pricing_panel.items.push({ item_code, item_name: item_name || item_code, checked: true });
+		this._render_pricing_checklist();
 	}
 
 	// ── Item History ─────────────────────────────────────────────────────────
@@ -294,7 +463,7 @@ class TransactionHistoryPage {
 
 	_render_item_history({ item_details, stock_metrics, purchases, sales, open_po, open_so }, $container) {
 		$container.append(this._render_metrics_grid(item_details, stock_metrics));
-		let $grid = $(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">`).appendTo($container);
+		let $grid = $(`<div class="item-results-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">`).appendTo($container);
 		this._render_transaction_panel($grid, purchases, "purchase");
 		this._render_transaction_panel($grid, sales, "sale");
 		this._render_open_orders_panel($grid, open_po || [], "po");
@@ -375,7 +544,7 @@ class TransactionHistoryPage {
 						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
 					</div>
 				</div>
-				<div class="item-section-body" style="max-height:280px;overflow-y:auto">
+				<div class="item-section-body" style="max-height:280px;overflow:auto">
 					<table style="width:100%;border-collapse:collapse;font-size:12px">
 						<thead>
 							<tr style="background:var(--subtle-fg)">
@@ -433,7 +602,7 @@ class TransactionHistoryPage {
 						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
 					</div>
 				</div>
-				<div class="item-section-body" style="max-height:220px;overflow-y:auto">
+				<div class="item-section-body" style="max-height:220px;overflow:auto">
 					<table style="width:100%;border-collapse:collapse;font-size:12px">
 						<thead>
 							<tr style="background:var(--subtle-fg)">
@@ -549,6 +718,7 @@ class TransactionHistoryPage {
 				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
 					placeholder="${__("Filter rows...")}" style="max-width:280px">
 			</div>
+			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
@@ -587,7 +757,8 @@ class TransactionHistoryPage {
 						</tr>
 					`).join("")}
 				</tbody>
-			</table>`;
+			</table>
+			</div>`;
 	}
 
 	// ── Bind tabs + accordion (single method) ────────────────────────────────
@@ -687,11 +858,13 @@ class TransactionHistoryPage {
 			const $sidebar = $(m).find(".item-panel-sidebar");
 			const collapsed = $sidebar.hasClass("item-panel-collapsed");
 			if (collapsed) {
-				$sidebar.removeClass("item-panel-collapsed").css({ width: "224px", "min-width": "224px", padding: "10px" });
+				$sidebar.removeClass("item-panel-collapsed").css({ width: "224px", "min-width": "224px", padding: "10px", overflow: "" });
 				$sidebar.find(".item-panel-body").show();
+				$sidebar.find(".item-panel-label").show();
 			} else {
-				$sidebar.addClass("item-panel-collapsed").css({ width: "32px", "min-width": "32px", padding: "4px" });
+				$sidebar.addClass("item-panel-collapsed").css({ width: "36px", "min-width": "36px", padding: "4px 2px", overflow: "hidden" });
 				$sidebar.find(".item-panel-body").hide();
+				$sidebar.find(".item-panel-label").hide();
 			}
 		});
 
@@ -821,6 +994,7 @@ class TransactionHistoryPage {
 		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-invoice");
 
 		return `
+			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
@@ -845,7 +1019,8 @@ class TransactionHistoryPage {
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
 						</tr>`).join("")}
 				</tbody>
-			</table>`;
+			</table>
+			</div>`;
 	}
 
 	_summary_status_pill(overdue_count, unpaid_count) {
