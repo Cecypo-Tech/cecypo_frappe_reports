@@ -463,14 +463,18 @@ def _get_open_sales_orders(item, company, warehouse=None):
 def _get_sales_rows(item, company, from_date, to_date, warehouse):
 	sii = frappe.qb.DocType("Sales Invoice Item")
 	si = frappe.qb.DocType("Sales Invoice")
+	cust = frappe.qb.DocType("Customer")
 
 	query = (
 		frappe.qb.from_(sii)
 		.inner_join(si).on(sii.parent == si.name)
+		.left_join(cust).on(si.customer == cust.name)
 		.select(
 			si.posting_date.as_("date"),
 			sii.parent.as_("voucher_no"),
 			si.customer,
+			cust.customer_group,
+			si.selling_price_list,
 			sii.qty,
 			sii.uom,
 			sii.rate,
