@@ -1845,7 +1845,7 @@ class TransactionHistoryPage {
 	_render_pricing_tab({ purchases, sales }, prices, price_list_filter, $container, item_code) {
 		const bc = this.base_currency;
 
-		const can_edit = frappe.has_perm ? frappe.has_perm("Item Price", "write") : false;
+		const can_edit = frappe.perm.has_perm("Item Price", 0, "write");
 		const avg_val_rate = purchases.length
 			? purchases.reduce((s, r) => s + (r.valuation_rate || 0), 0) / purchases.length
 			: null;

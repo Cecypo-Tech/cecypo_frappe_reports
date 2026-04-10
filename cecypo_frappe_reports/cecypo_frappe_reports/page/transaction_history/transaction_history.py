@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.utils import flt
 from pypika import functions as fn
 
@@ -481,6 +482,8 @@ def get_item_prices(item_code):
 def update_item_price(item_code, price_list, rate):
 	"""Upsert an Item Price record. Requires Item Price write permission."""
 	frappe.has_permission("Item Price", "write", throw=True)
+	if flt(rate, 2) <= 0:
+		frappe.throw(_("Rate must be greater than zero"))
 
 	existing = frappe.db.get_value(
 		"Item Price",
