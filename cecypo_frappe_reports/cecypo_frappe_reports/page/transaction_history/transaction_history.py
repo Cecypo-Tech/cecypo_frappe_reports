@@ -238,6 +238,7 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 @frappe.whitelist()
 def get_receivables(company, as_of_date, customer=None):
 	"""AR aging summary — one row per customer with outstanding_amount > 0."""
+	frappe.has_permission("Sales Invoice", "read", throw=True)
 	from collections import defaultdict
 	from frappe.utils import getdate
 
@@ -311,6 +312,7 @@ def get_receivables(company, as_of_date, customer=None):
 @frappe.whitelist()
 def get_receivables_detail(customer, company, as_of_date):
 	"""Individual outstanding SI rows for accordion drill-down."""
+	frappe.has_permission("Sales Invoice", "read", throw=True)
 	from frappe.utils import getdate
 
 	as_of = getdate(as_of_date)
@@ -346,6 +348,7 @@ def get_receivables_detail(customer, company, as_of_date):
 @frappe.whitelist()
 def get_payables(company, as_of_date, supplier=None):
 	"""AP aging summary — one row per supplier with outstanding_amount > 0."""
+	frappe.has_permission("Purchase Invoice", "read", throw=True)
 	from collections import defaultdict
 	from frappe.utils import getdate
 
@@ -418,6 +421,7 @@ def get_payables(company, as_of_date, supplier=None):
 @frappe.whitelist()
 def get_payables_detail(supplier, company, as_of_date):
 	"""Individual outstanding PI rows for accordion drill-down."""
+	frappe.has_permission("Purchase Invoice", "read", throw=True)
 	from frappe.utils import getdate
 
 	as_of = getdate(as_of_date)
@@ -508,6 +512,24 @@ def update_item_price(item_code, price_list, rate):
 
 	frappe.db.commit()
 	return {"name": doc.name, "price_list_rate": doc.price_list_rate}
+
+
+@frappe.whitelist()
+def get_warehouse_stock(item_code, company):
+	"""Return stock qty per enabled, non-group warehouse for the given item and company."""
+	Wh = frappe.qb.DocType("Warehouse")
+	Bn = frappe.qb.DocType("Bin")
+	rows = (
+		frappe.qb.from_(Wh)
+		.left_join(Bn).on((Bn.warehouse == Wh.name) & (Bn.item_code == item_code))
+		.select(Wh.name.as_("warehouse"), Wh.warehouse_name, fn.IfNull(Bn.actual_qty, 0).as_("actual_qty"))
+		.where(Wh.company == company)
+		.where(Wh.disabled == 0)
+		.where(Wh.is_group == 0)
+		.orderby(Bn.actual_qty, order=frappe.qb.desc)
+		.run(as_dict=True)
+	)
+	return rows
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────

@@ -482,6 +482,7 @@ class TransactionHistoryPage {
 			</div>`;
 
 		const stock_color = (m.current_stock || 0) > 0 ? "var(--green)" : "var(--red)";
+		const company = this.controls.item_company ? (this.controls.item_company.get_value() || "") : "";
 		const col_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px";
 
 		return `
@@ -495,7 +496,7 @@ class TransactionHistoryPage {
 				</div>
 				<div style="${col_style}">
 					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Stock")}</div>
-					${row(__("Current Stock"), `<span style="color:${stock_color};font-weight:700">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
+					${row(__("Current Stock"), `<span class="th-stock-hover" data-item="${d.item_code}" data-company="${company}" style="color:${stock_color};font-weight:700;cursor:help;border-bottom:1px dotted ${stock_color}">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
 					${row(__("Stock Value"), format_currency(m.stock_value, bc), true)}
 					${row(__("Avg. Rate"), format_currency(m.avg_rate, bc))}
 					${row(__("UOM"), d.stock_uom || "—")}
@@ -783,6 +784,14 @@ class TransactionHistoryPage {
 
 		$(m).on("click", ".btn-run-items", () => this._run_item_history());
 
+		// Current Stock hover — warehouse breakdown popover
+		$(m).on("mouseenter", ".th-stock-hover", (e) => {
+			this._show_warehouse_popover($(e.currentTarget));
+		});
+		$(m).on("mouseleave", ".th-stock-hover", () => {
+			$("#th-warehouse-popover").remove();
+		});
+
 		// Item tab switching
 		$(m).on("click", ".item-tab-link", (e) => {
 			e.preventDefault();
@@ -922,6 +931,36 @@ class TransactionHistoryPage {
 					this.controls.item_add.set_value("");
 				});
 			}, 50);
+		});
+
+		// "Add all filtered" — inject footer link into awesomplete dropdown each time it opens.
+		// setTimeout defers until after Frappe appends its own footer items (Create new, Advanced Search).
+		$(m).on("awesomplete-open", ".ctrl-item-add input", (e) => {
+			setTimeout(() => {
+				const $ul = $(e.target).closest(".awesomplete").find("ul");
+				if (!$ul.length || !$ul.is(":visible") || $ul.find(".add-all-filtered-li").length) return;
+				$ul.append(`<li class="add-all-filtered-li" role="option" style="border-top:1px solid var(--border-color);padding:5px 10px;font-size:11px;color:var(--blue);background:var(--fg-color);cursor:pointer;text-align:center;font-style:italic">${__("+ Add all filtered")}</li>`);
+			}, 0);
+		});
+		$(m).on("mousedown", ".ctrl-item-add .add-all-filtered-li", (e) => { e.preventDefault(); });
+		$(m).on("click", ".ctrl-item-add .add-all-filtered-li", () => {
+			const txt = (this.controls.item_add ? this.controls.item_add.get_value() : "") || "";
+			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
+			frappe.call({
+				method: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
+				args: {
+					doctype: "Item", txt, searchfield: "name",
+					start: 0, page_len: 500,
+					filters: JSON.stringify(group ? { item_group: group } : {}),
+					as_dict: 1,
+				},
+			}).then(r => {
+				const results = r.message || [];
+				if (!results.length) { frappe.show_alert({ message: __("No items found"), indicator: "orange" }); return; }
+				results.forEach(it => this._add_item_to_panel(it.name, it.item_name || it.name));
+				frappe.show_alert({ message: __("{0} item(s) added", [results.length]), indicator: "green" });
+				this.controls.item_add.set_value("");
+			});
 		});
 
 		// Item section collapse toggle
@@ -1175,6 +1214,35 @@ class TransactionHistoryPage {
 			}, 50);
 		});
 
+		// "Add all filtered" — Pricing panel
+		$(m).on("awesomplete-open", ".ctrl-pricing-add input", (e) => {
+			setTimeout(() => {
+				const $ul = $(e.target).closest(".awesomplete").find("ul");
+				if (!$ul.length || !$ul.is(":visible") || $ul.find(".add-all-filtered-li").length) return;
+				$ul.append(`<li class="add-all-filtered-li" role="option" style="border-top:1px solid var(--border-color);padding:5px 10px;font-size:11px;color:var(--blue);background:var(--fg-color);cursor:pointer;text-align:center;font-style:italic">${__("+ Add all filtered")}</li>`);
+			}, 0);
+		});
+		$(m).on("mousedown", ".ctrl-pricing-add .add-all-filtered-li", (e) => { e.preventDefault(); });
+		$(m).on("click", ".ctrl-pricing-add .add-all-filtered-li", () => {
+			const txt = (this.controls.pricing_add ? this.controls.pricing_add.get_value() : "") || "";
+			const group = this.controls.pricing_group ? this.controls.pricing_group.get_value() : null;
+			frappe.call({
+				method: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
+				args: {
+					doctype: "Item", txt, searchfield: "name",
+					start: 0, page_len: 500,
+					filters: JSON.stringify(group ? { item_group: group } : {}),
+					as_dict: 1,
+				},
+			}).then(r => {
+				const results = r.message || [];
+				if (!results.length) { frappe.show_alert({ message: __("No items found"), indicator: "orange" }); return; }
+				results.forEach(it => this._add_item_to_pricing_panel(it.name, it.item_name || it.name));
+				frappe.show_alert({ message: __("{0} item(s) added", [results.length]), indicator: "green" });
+				this.controls.pricing_add.set_value("");
+			});
+		});
+
 		$(m).on("click", ".btn-run-pricing", () => this._run_pricing());
 
 		$(m).on("click", ".pricing-tab-link", (e) => {
@@ -1203,13 +1271,22 @@ class TransactionHistoryPage {
 			$(m).find(`.price-list-row[data-pl="${pl}"][data-item="${item}"] .btn-edit-price`).prop("disabled", false);
 		});
 
+		const _apply_markup = ($row) => {
+			const avg = parseFloat($row.find(".price-markup-input").data("avg-val")) || 0;
+			const markup = parseFloat($row.find(".price-markup-input").val()) || 0;
+			const round_to = parseFloat($row.find(".price-round-select").val()) || 0;
+			const raw = avg * (1 + markup / 100);
+			const rounded = round_to > 0 ? Math.round(raw / round_to) * round_to : raw;
+			$row.find(".price-suggested").text(format_number(rounded, null, 2));
+			$row.find(".price-new-rate-input").val(rounded.toFixed(2));
+		};
+
 		$(m).on("input", ".price-markup-input", (e) => {
-			const avg = parseFloat($(e.currentTarget).data("avg-val")) || 0;
-			const markup = parseFloat($(e.currentTarget).val()) || 0;
-			const suggested = avg * (1 + markup / 100);
-			const $row = $(e.currentTarget).closest("tr");
-			$row.find(".price-suggested").text(format_number(suggested, null, 2));
-			$row.find(".price-new-rate-input").val(suggested.toFixed(2));
+			_apply_markup($(e.currentTarget).closest("tr"));
+		});
+
+		$(m).on("change", ".price-round-select", (e) => {
+			_apply_markup($(e.currentTarget).closest("tr"));
 		});
 
 		$(m).on("click", ".btn-use-last-sold", (e) => {
@@ -1539,12 +1616,14 @@ class TransactionHistoryPage {
 			`Company: ${company}`,
 			`As Of: ${frappe.datetime.str_to_user(as_of_date)}`,
 			``,
-			`Invoice No.       Date          Due Date      Outstanding   Days Overdue  Status`,
-			`──────────────────────────────────────────────────────────────────────────────────`,
+			`Invoice No.       Due Date               Amount`,
+			`──────────────────────────────────────────────────`,
 		];
-		const body = detail_rows.map(r =>
-			`${(r.voucher_no || "").padEnd(18)}${frappe.datetime.str_to_user(r.date).padEnd(14)}${(r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—").padEnd(14)}${format_number(r.outstanding_amount, null, 2).padStart(14)}${String(r.days_overdue || 0).padStart(14)}  ${r.status || ""}`
-		);
+		const body = detail_rows.map(r => {
+			const due = r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—";
+			const overdue = r.days_overdue > 0 ? ` (+${r.days_overdue})` : "";
+			return `${(r.voucher_no || "").padEnd(18)}${(due + overdue).padEnd(22)}${format_number(r.outstanding_amount, null, 2).padStart(14)}`;
+		});
 		const total = detail_rows.reduce((s, r) => s + (r.outstanding_amount || 0), 0);
 		const footer = [``, `Total Outstanding: ${format_number(total, null, 2)}`];
 		const text = [...header, ...body, ...footer].join("\n");
@@ -1845,7 +1924,7 @@ class TransactionHistoryPage {
 	_render_pricing_tab({ purchases, sales }, prices, price_list_filter, $container, item_code) {
 		const bc = this.base_currency;
 
-		const can_edit = frappe.perm.has_perm("Item Price", 0, "write");
+		const can_edit = frappe.model.can_write("Item Price");
 		const avg_val_rate = purchases.length
 			? purchases.reduce((s, r) => s + (r.valuation_rate || 0), 0) / purchases.length
 			: null;
@@ -1881,9 +1960,9 @@ class TransactionHistoryPage {
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${p.valid_upto ? frappe.datetime.str_to_user(p.valid_upto) : "—"}</td>
 								${can_edit ? `
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-									<button class="btn btn-xs btn-default btn-edit-price" data-pl="${p.price_list}" data-item="${item_code}"
+									${p.type === "Selling" ? `<button class="btn btn-xs btn-default btn-edit-price" data-pl="${p.price_list}" data-item="${item_code}"
 										data-avg-val="${avg_val_rate !== null ? avg_val_rate.toFixed(2) : ""}"
-										title="${__("Edit price")}">✏️</button>
+										title="${__("Edit price")}">✏️</button>` : ""}
 								</td>` : ""}
 							</tr>
 							<tr class="price-edit-row hidden" data-edit-for-pl="${p.price_list}" data-edit-for-item="${item_code}">
@@ -1897,6 +1976,15 @@ class TransactionHistoryPage {
 											<input type="number" class="form-control form-control-sm price-markup-input"
 												value="30" style="width:70px;display:inline-block"
 												data-avg-val="${avg_val_rate.toFixed(2)}">
+										</span>
+										<span style="font-size:12px;color:var(--text-muted)">${__("Round")}:
+											<select class="form-control form-control-sm price-round-select" style="width:70px;display:inline-block">
+												<option value="0">${__("None")}</option>
+												<option value="1">1</option>
+												<option value="5">5</option>
+												<option value="10">10</option>
+												<option value="100">100</option>
+											</select>
 										</span>` : ""}
 										<button class="btn btn-xs btn-default btn-use-last-sold" data-item="${item_code}" data-pl="${p.price_list}"
 											style="font-size:11px">${__("Use Last Sold Rate")}</button>
@@ -2021,6 +2109,47 @@ class TransactionHistoryPage {
 				this.controls.supplier.set_value(supplier).then(() => this._load_supplier_history());
 			}
 		}, 200);
+	}
+
+	_show_warehouse_popover($el) {
+		$("#th-warehouse-popover").remove();
+		const item_code = $el.data("item");
+		const company = $el.data("company");
+		if (!item_code || !company) return;
+
+		const $pop = $(`
+			<div id="th-warehouse-popover" style="
+				position:fixed;z-index:9999;
+				background:var(--fg-color);border:1px solid var(--border-color);border-radius:6px;
+				box-shadow:0 4px 16px rgba(0,0,0,.18);padding:10px 14px;min-width:240px;max-width:340px;
+				font-size:12px;pointer-events:none
+			">
+				<div style="font-weight:600;margin-bottom:8px;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em">${__("Stock by Warehouse")}</div>
+				<div class="th-whpop-body" style="color:var(--text-muted)">${__("Loading…")}</div>
+			</div>`).appendTo("body");
+
+		// Position below the element
+		const rect = $el[0].getBoundingClientRect();
+		$pop.css({ top: rect.bottom + 6, left: Math.max(8, rect.left) });
+
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_warehouse_stock",
+			args: { item_code, company },
+		}).then(r => {
+			if (!$("#th-warehouse-popover").length) return; // already closed
+			const rows = r.message || [];
+			if (!rows.length) {
+				$pop.find(".th-whpop-body").html(`<span>${__("No warehouses found")}</span>`);
+				return;
+			}
+			const tbody = rows.map(w => `
+				<tr>
+					<td style="padding:3px 0;padding-right:16px;white-space:nowrap;color:var(--text-color)">${w.warehouse_name || w.warehouse}</td>
+					<td style="padding:3px 0;text-align:right;font-weight:${w.actual_qty > 0 ? "700" : "400"};color:${w.actual_qty > 0 ? "var(--green)" : "var(--text-muted)"}">${format_number(w.actual_qty, null, 2)}</td>
+				</tr>`).join("");
+			$pop.find(".th-whpop-body").html(`
+				<table style="width:100%;border-collapse:collapse">${tbody}</table>`);
+		});
 	}
 
 	_summary_status_pill(overdue_count, unpaid_count) {
