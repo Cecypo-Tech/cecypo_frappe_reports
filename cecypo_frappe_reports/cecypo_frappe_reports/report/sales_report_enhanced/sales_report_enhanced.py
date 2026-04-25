@@ -36,6 +36,7 @@ def get_invoices(filters):
 			si.customer_name,
 			si.base_grand_total,
 			si.outstanding_amount,
+			si.is_return,
 		)
 		.where(si.docstatus == 1)
 		.orderby(si.posting_date)
@@ -55,7 +56,21 @@ def get_invoices(filters):
 		query = query.where(si.customer == filters.customer)
 
 	if filters.get("customer_group"):
-		query = query.where(si.customer_group == filters.customer_group)
+		# Tree-aware: include the selected group AND all descendants
+		groups = frappe.db.get_descendants("Customer Group", filters.customer_group) or []
+		groups.append(filters.customer_group)
+		query = query.where(si.customer_group.isin(groups))
+
+	if filters.get("sales_person"):
+		st = frappe.qb.DocType("Sales Team")
+		sp_sub = (
+			frappe.qb.from_(st)
+			.select(st.parent)
+			.where(st.parenttype == "Sales Invoice")
+			.where(st.sales_person == filters.sales_person)
+			.distinct()
+		)
+		query = query.where(si.name.isin(sp_sub))
 
 	if filters.get("warehouse"):
 		sii = frappe.qb.DocType("Sales Invoice Item")
@@ -74,28 +89,29 @@ def get_invoices(filters):
 
 	if filters.get("mode_of_payment"):
 		sip = frappe.qb.DocType("Sales Invoice Payment")
-		sia = frappe.qb.DocType("Sales Invoice Advance")
+		per = frappe.qb.DocType("Payment Entry Reference")
 		pe = frappe.qb.DocType("Payment Entry")
 
-		# Invoices with direct payment matching the mode
+		# POS-style direct payments (Sales Invoice Payment child table)
 		direct = (
 			frappe.qb.from_(sip)
 			.select(sip.parent)
 			.where(sip.mode_of_payment == filters.mode_of_payment)
 		)
 
-		# Invoices with advance payment entry matching the mode
-		via_advance = (
-			frappe.qb.from_(sia)
+		# Non-POS payments via Payment Entry → Payment Entry Reference
+		via_pe = (
+			frappe.qb.from_(per)
 			.inner_join(pe)
-			.on(sia.reference_name == pe.name)
-			.select(sia.parent)
-			.where(sia.reference_type == "Payment Entry")
+			.on(per.parent == pe.name)
+			.select(per.reference_name)
+			.where(per.reference_doctype == "Sales Invoice")
 			.where(pe.docstatus == 1)
+			.where(pe.payment_type == "Receive")
 			.where(pe.mode_of_payment == filters.mode_of_payment)
 		)
 
-		query = query.where(si.name.isin(direct) | si.name.isin(via_advance))
+		query = query.where(si.name.isin(direct) | si.name.isin(via_pe))
 
 	return query.run(as_dict=True)
 
@@ -107,9 +123,9 @@ def get_payment_map(invoice_names):
 	payment_map = {}
 	modes_set = set()
 
-	# 1. Direct payments (Sales Invoice Payment child table - POS invoices)
+	# 1. POS-style direct payments (Sales Invoice Payment child table)
 	sip = frappe.qb.DocType("Sales Invoice Payment")
-	payments = (
+	direct = (
 		frappe.qb.from_(sip)
 		.select(
 			sip.parent,
@@ -121,34 +137,40 @@ def get_payment_map(invoice_names):
 		.run(as_dict=True)
 	)
 
-	for p in payments:
+	for p in direct:
+		if not p.mode_of_payment:
+			continue
 		payment_map.setdefault(p.parent, {})[p.mode_of_payment] = flt(p.base_amount)
 		modes_set.add(p.mode_of_payment)
 
-	# 2. Advances (Sales Invoice Advance → Payment Entry)
-	sia = frappe.qb.DocType("Sales Invoice Advance")
+	# 2. Non-POS payments via Payment Entry Reference (canonical PE → SI link)
+	#    Sales Invoice Advance is unreliable: it's only populated when the invoice
+	#    is saved with `allocate_advances_automatically=1` AND a matching unallocated
+	#    PE exists at that moment. Payment Entry Reference is the source of truth.
+	per = frappe.qb.DocType("Payment Entry Reference")
 	pe = frappe.qb.DocType("Payment Entry")
-	advances = (
-		frappe.qb.from_(sia)
+	via_pe = (
+		frappe.qb.from_(per)
 		.inner_join(pe)
-		.on(sia.reference_name == pe.name)
+		.on(per.parent == pe.name)
 		.select(
-			sia.parent,
+			per.reference_name.as_("parent"),
 			pe.mode_of_payment,
-			fn.Sum(sia.allocated_amount).as_("allocated_amount"),
+			fn.Sum(per.allocated_amount * fn.Coalesce(per.exchange_rate, 1)).as_("base_amount"),
 		)
-		.where(sia.parent.isin(invoice_names))
-		.where(sia.reference_type == "Payment Entry")
+		.where(per.reference_doctype == "Sales Invoice")
+		.where(per.reference_name.isin(invoice_names))
 		.where(pe.docstatus == 1)
-		.groupby(sia.parent, pe.mode_of_payment)
+		.where(pe.payment_type == "Receive")
+		.groupby(per.reference_name, pe.mode_of_payment)
 		.run(as_dict=True)
 	)
 
-	for a in advances:
+	for a in via_pe:
 		if not a.mode_of_payment:
 			continue
 		existing = flt(payment_map.setdefault(a.parent, {}).get(a.mode_of_payment, 0))
-		payment_map[a.parent][a.mode_of_payment] = existing + flt(a.allocated_amount)
+		payment_map[a.parent][a.mode_of_payment] = existing + flt(a.base_amount)
 		modes_set.add(a.mode_of_payment)
 
 	all_modes = sorted(modes_set)
@@ -161,13 +183,13 @@ def get_columns(all_modes):
 			"label": _("Voucher Type"),
 			"fieldname": "voucher_type",
 			"fieldtype": "Data",
-			"width": 120,
+			"width": 140,
 		},
 		{
 			"label": _("Voucher"),
 			"fieldname": "voucher_no",
-			"fieldtype": "Dynamic Link",
-			"options": "voucher_type",
+			"fieldtype": "Link",
+			"options": "Sales Invoice",
 			"width": 160,
 		},
 		{
@@ -221,14 +243,16 @@ def get_columns(all_modes):
 def get_data(invoices, payment_map, all_modes):
 	data = []
 	for inv in invoices:
+		is_return = bool(inv.is_return)
 		row = {
-			"voucher_type": "Sales Invoice",
+			"voucher_type": "Sales Invoice-Return" if is_return else "Sales Invoice",
 			"voucher_no": inv.name,
 			"posting_date": inv.posting_date,
 			"customer": inv.customer,
 			"customer_name": inv.customer_name,
 			"grand_total": flt(inv.base_grand_total, 2),
 			"outstanding_amount": flt(inv.outstanding_amount, 2),
+			"is_return": 1 if is_return else 0,
 		}
 
 		inv_payments = payment_map.get(inv.name, {})

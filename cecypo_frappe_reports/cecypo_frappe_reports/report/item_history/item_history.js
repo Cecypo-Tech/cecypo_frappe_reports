@@ -71,11 +71,7 @@ frappe.query_reports["Item History"] = {
 `;
 		document.head.appendChild(style);
 		report.page.add_button(__("Best Fit"), () => {
-			const dt = report.datatable;
-			if (!dt) return;
-			dt.header
-				.querySelectorAll(".dt-cell .dt-cell__resize-handle")
-				.forEach((h) => h.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+			cecypo_reports.bestFit(report);
 		});
 	},
 };

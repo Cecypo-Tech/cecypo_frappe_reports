@@ -26,7 +26,7 @@ app_license = "agpl-3.0"
 
 # include js, css files in header of desk.html
 app_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"
-# app_include_js = "/assets/cecypo_frappe_reports/js/cecypo_frappe_reports.js"
+app_include_js = "/assets/cecypo_frappe_reports/js/best_fit.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"

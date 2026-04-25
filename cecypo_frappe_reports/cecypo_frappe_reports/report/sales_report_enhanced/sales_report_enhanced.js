@@ -38,6 +38,12 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			options: "Customer Group",
 		},
 		{
+			fieldname: "sales_person",
+			label: __("Sales Person"),
+			fieldtype: "Link",
+			options: "Sales Person",
+		},
+		{
 			fieldname: "mode_of_payment",
 			label: __("Mode of Payment"),
 			fieldtype: "Link",
@@ -51,10 +57,16 @@ frappe.query_reports["Sales Report Enhanced"] = {
 		},
 	],
 	formatter(value, row, column, data, default_formatter) {
+		let formatted;
 		if ((column.fieldtype === "Float" || column.fieldtype === "Currency") && value != null) {
-			return format_number(value, null, 2);
+			formatted = format_number(value, null, 2);
+		} else {
+			formatted = default_formatter(value, row, column, data);
 		}
-		return default_formatter(value, row, column, data);
+		if (data && data.is_return) {
+			return `<span style="color: var(--text-danger, #d73a49);">${formatted}</span>`;
+		}
+		return formatted;
 	},
 	onload(report) {
 		// Add custom_sale_type filter if the field exists on Sales Invoice
@@ -95,19 +107,8 @@ frappe.query_reports["Sales Report Enhanced"] = {
 		`;
 		document.head.appendChild(style);
 
-		// Standalone "Best Fit" button
 		report.page.add_button(__("Best Fit"), () => {
-			const dt = report.datatable;
-			if (!dt) return;
-
-			// Simulate a dblclick on each column's resize handle,
-			// which triggers the datatable's built-in perfect-width logic
-			const handles = dt.header.querySelectorAll(
-				".dt-cell .dt-cell__resize-handle"
-			);
-			handles.forEach((handle) => {
-				handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-			});
+			cecypo_reports.bestFit(report);
 		});
 	},
 };

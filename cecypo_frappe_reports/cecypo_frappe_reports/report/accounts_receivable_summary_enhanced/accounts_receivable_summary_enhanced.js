@@ -170,12 +170,7 @@ frappe.query_reports["Accounts Receivable Summary Enhanced"] = {
 		document.head.appendChild(style);
 
 		report.page.add_button(__("Best Fit"), () => {
-			const dt = report.datatable;
-			if (!dt) return;
-			const handles = dt.header.querySelectorAll(".dt-cell .dt-cell__resize-handle");
-			handles.forEach((handle) => {
-				handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-			});
+			cecypo_reports.bestFit(report);
 		});
 	},
 };
