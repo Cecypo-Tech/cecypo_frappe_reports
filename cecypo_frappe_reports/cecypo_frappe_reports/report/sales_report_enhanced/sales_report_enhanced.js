@@ -15,7 +15,7 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			fieldname: "from_date",
 			label: __("From Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
+			default: frappe.datetime.get_today(),
 			reqd: 1,
 		},
 		{
@@ -54,6 +54,17 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			label: __("Warehouse"),
 			fieldtype: "Link",
 			options: "Warehouse",
+		},
+		{
+			fieldname: "owner",
+			label: __("Owner"),
+			fieldtype: "Link",
+			options: "User",
+		},
+		{
+			fieldname: "with_outstandings",
+			label: __("With Outstandings"),
+			fieldtype: "Check",
 		},
 	],
 	formatter(value, row, column, data, default_formatter) {

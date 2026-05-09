@@ -55,6 +55,12 @@ def get_invoices(filters):
 	if filters.get("customer"):
 		query = query.where(si.customer == filters.customer)
 
+	if filters.get("owner"):
+		query = query.where(si.owner == filters.owner)
+
+	if filters.get("with_outstandings"):
+		query = query.where(si.outstanding_amount > 0)
+
 	if filters.get("customer_group"):
 		# Tree-aware: include the selected group AND all descendants
 		groups = frappe.db.get_descendants("Customer Group", filters.customer_group) or []
