@@ -1,6 +1,14 @@
 // Copyright (c) 2026, Cecypo and contributors
 // For license information, please see license.txt
 
+const _ICONS = {
+	copy:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+	link:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+	print: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>`,
+	email: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`,
+	info:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+};
+
 frappe.pages["transaction-history"].on_page_load = function (wrapper) {
 	let page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -60,6 +68,37 @@ class TransactionHistoryPage {
 				}
 				.item-results-grid { grid-template-columns: 1fr !important; }
 			}
+			.th-action-btn {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 26px;
+				height: 26px;
+				padding: 0;
+				border: none;
+				background: transparent;
+				border-radius: 4px;
+				cursor: pointer;
+				color: var(--text-muted);
+				transition: background .1s, color .1s;
+				flex-shrink: 0;
+			}
+			.th-action-btn:hover {
+				background: var(--control-bg);
+				color: var(--text-color);
+			}
+			.th-party-info-btn {
+				display: inline-flex;
+				align-items: center;
+				cursor: pointer;
+				margin-left: 4px;
+				vertical-align: middle;
+				color: var(--text-muted);
+				transition: color .1s, opacity .1s;
+			}
+			.th-party-info-btn:hover { color: var(--text-color); }
+			.th-party-info-btn.has-advance { color: var(--blue); }
+			.th-btn-wrap { display: flex; align-items: flex-end; padding-bottom: 1px; }
 		`;
 		document.head.appendChild(style);
 	}
@@ -137,7 +176,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-supp-from" style="min-width:120px"></div>
 						<div class="ctrl-supp-to" style="min-width:120px"></div>
 						<div class="ctrl-supp-source"></div>
-						<button class="btn btn-primary btn-sm btn-get-supplier">${__("Get History")}</button>
+						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-get-supplier">${__("Get History")}</button></div>
 					</div>
 					<div class="th-content supplier-content"></div>
 				</div>
@@ -147,7 +186,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-recv-company" style="min-width:180px"></div>
 						<div class="ctrl-recv-as-of" style="min-width:140px"></div>
 						<div class="ctrl-recv-customer" style="min-width:220px"></div>
-						<button class="btn btn-primary btn-sm btn-get-receivables">${__("Get")}</button>
+						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-get-receivables">${__("Get")}</button></div>
 					</div>
 					<div class="th-content receivables-content"></div>
 				</div>
@@ -157,7 +196,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-pay-company" style="min-width:180px"></div>
 						<div class="ctrl-pay-as-of" style="min-width:140px"></div>
 						<div class="ctrl-pay-supplier" style="min-width:220px"></div>
-						<button class="btn btn-primary btn-sm btn-get-payables">${__("Get")}</button>
+						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-get-payables">${__("Get")}</button></div>
 					</div>
 					<div class="th-content payables-content"></div>
 				</div>
@@ -530,7 +569,7 @@ class TransactionHistoryPage {
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${is_purchase ? (r.doctype === "Purchase Receipt" ? "purchase-receipt" : "purchase-invoice") : "sales-invoice"}/${r.voucher_no}">${r.voucher_no}</a></td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${is_purchase ? (r.doctype === "Purchase Receipt" ? "purchase-receipt" : "purchase-invoice") : "sales-invoice"}/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[party_key] || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
@@ -588,7 +627,7 @@ class TransactionHistoryPage {
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[party_key] || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.ordered_qty, null, 2)}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r[received_key], null, 2)}</td>
@@ -712,20 +751,28 @@ class TransactionHistoryPage {
 				style="padding:5px 8px;text-align:${align || "left"};color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent};cursor:pointer;white-space:nowrap;user-select:none">
 				${label}${sort_icon(key)}
 			</th>`;
-		const th_plain = (label) => `
-			<th style="padding:5px 8px;color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent}">
+		const th_plain = (label, align) => `
+			<th style="padding:5px 8px;${align ? "text-align:" + align + ";" : ""}color:var(--text-muted);font-weight:600;border-bottom:2px solid ${accent}">
 				${label}
 			</th>`;
 
 		return `
-			<div style="margin-bottom:8px">
+			<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
 				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
-					placeholder="${__("Filter rows...")}" style="max-width:280px">
+					placeholder="${__("Filter rows...")}" style="max-width:240px">
+				<button class="btn-copy-selected-items" data-party-type="${party_type}" disabled
+					title="${__("Copy selected item names and prices to clipboard")}"
+					style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--border-color);border-radius:4px;background:transparent;cursor:not-allowed;color:var(--text-muted);opacity:.4;font-size:11px;flex-shrink:0">
+					${_ICONS.copy} <span class="copy-sel-count">${__("0 selected")}</span>
+				</button>
 			</div>
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" data-party-type="${party_type}">
 				<thead>
 					<tr style="background:var(--subtle-fg)">
+						<th style="padding:5px 8px;width:28px;border-bottom:2px solid ${accent}">
+							<input type="checkbox" class="party-select-all" data-party-type="${party_type}" title="${__("Select / deselect all")}">
+						</th>
 						<th style="padding:5px 8px;width:28px;border-bottom:2px solid ${accent}"></th>
 						${th(__("Item Code"), "item_code")}
 						${th(__("Item Name"), "item_name")}
@@ -733,33 +780,46 @@ class TransactionHistoryPage {
 						${th(__("Total Qty"), "total_qty", "right")}
 						${th(rate_col, rate_key, "right")}
 						${th(__("Total Amount"), "total_amount", "right")}
+						${th_plain(__("Avail. Qty"), "right")}
 						${th(date_col, date_key)}
 						${th_plain(__("Status"))}
 					</tr>
 				</thead>
 				<tbody>
-					${rows.map((r, i) => `
-						<tr class="summary-row" data-item="${r.item_code}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
+					${rows.map((r, i) => {
+						const stock_color = (r.current_stock || 0) > 0 ? "var(--green)" : "var(--text-muted)";
+						const last_rate = parseFloat(r.last_rate || 0);
+						return `
+						<tr class="summary-row" data-item="${r.item_code}" data-avg-rate="${parseFloat(r[rate_key] || 0)}" data-last-rate="${last_rate}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
 							style="${i % 2 ? "background:var(--control-bg)" : "background:var(--bg-color)"};cursor:pointer"
 							title="${__("Click to expand transactions")}">
+							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)" onclick="event.stopPropagation()">
+								<input type="checkbox" class="party-row-check" data-party-type="${party_type}">
+							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
-							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/item/${r.item_code}">${r.item_code}</a></td>
+							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/item/${r.item_code}" target="_blank">${r.item_code}</a></td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.item_name}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r[count_key]}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
 							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
+							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">
+								<span class="th-stock-hover" data-item="${r.item_code}" data-company="${company}"
+									style="color:${stock_color};font-weight:${(r.current_stock || 0) > 0 ? "700" : "400"};cursor:help;border-bottom:1px dotted ${stock_color}">
+									${format_number(r.current_stock || 0, null, 2)}
+								</span>
+							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r[date_key] ? frappe.datetime.str_to_user(r[date_key]) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._summary_status_pill(r.overdue_count || 0, r.unpaid_count || 0)}</td>
 						</tr>
 						<tr class="detail-row hidden" data-detail-for="${r.item_code}">
-							<td colspan="9" style="padding:0;border-bottom:2px solid var(--border-color)">
+							<td colspan="11" style="padding:0;border-bottom:2px solid var(--border-color)">
 								<div class="detail-content" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
 							</td>
-						</tr>
-					`).join("")}
+						</tr>`;
+					}).join("")}
 				</tbody>
 			</table>
 			</div>`;
@@ -856,7 +916,7 @@ class TransactionHistoryPage {
 				} else {
 					$(this).addClass("hidden");
 					$detail.addClass("hidden");
-					$(this).find("td:first").text("▶");
+					$(this).find("td:eq(1)").text("▶");
 				}
 			});
 			// Clear any detail row filters when search is cleared
@@ -1087,9 +1147,68 @@ class TransactionHistoryPage {
 
 		// ── Party action buttons ──────────────────────────────────────────────
 
+		// Party summary row checkbox — update copy-selected button
+		$(m).on("change", ".party-row-check", (e) => {
+			const party_type = $(e.currentTarget).data("party-type");
+			this._update_copy_selected_btn(party_type, $(m));
+		});
+
+		// Party summary select-all checkbox
+		$(m).on("change", ".party-select-all", (e) => {
+			const party_type = $(e.currentTarget).data("party-type");
+			const checked = e.currentTarget.checked;
+			$(m).find(`table[data-party-type="${party_type}"] .summary-row:not(.hidden) .party-row-check`)
+				.prop("checked", checked);
+			this._update_copy_selected_btn(party_type, $(m));
+		});
+
+		// Copy selected items
+		$(m).on("click", ".btn-copy-selected-items:not([disabled])", (e) => {
+			const party_type = $(e.currentTarget).data("party-type");
+			this._copy_selected_items(party_type, $(m));
+		});
+
+		// Party info icon
+		$(m).on("click", ".th-party-info-btn", (e) => {
+			e.stopPropagation();
+			const party = $(e.currentTarget).data("party");
+			const party_type = $(e.currentTarget).data("party-type");
+			const company = $(e.currentTarget).data("company") || "";
+			this._show_party_info_dialog(party_type, party, company);
+		});
+
+		$(m).on("click", ".btn-email-stmt", (e) => {
+			e.stopPropagation();
+			const $wrap = $(e.currentTarget).closest(".th-party-actions");
+			const party = $wrap.data("party");
+			const party_type = $wrap.data("party-type");
+			const company = $wrap.data("company");
+			const as_of_date = $wrap.data("as-of");
+			const is_customer = party_type === "customer";
+			const $dc = $(m).find(
+				is_customer
+					? `.recv-detail-content[data-for="${party}"]`
+					: `.pay-detail-content[data-for="${party}"]`
+			);
+			const existing = $dc.data("rows");
+			if (existing) {
+				this._show_email_dialog(party_type, party, company, as_of_date, existing);
+			} else {
+				const method = is_customer
+					? "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail"
+					: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail";
+				const args = is_customer
+					? { customer: party, company, as_of_date }
+					: { supplier: party, company, as_of_date };
+				frappe.call({ method, args, callback: (r) => {
+					this._show_email_dialog(party_type, party, company, as_of_date, r.message || []);
+				}});
+			}
+		});
+
 		$(m).on("click", ".btn-copy-text", (e) => {
 			e.stopPropagation();
-			const $wrap = $(e.currentTarget).closest("[data-party-type]");
+			const $wrap = $(e.currentTarget).closest(".th-party-actions");
 			const party = $wrap.data("party");
 			const party_type = $wrap.data("party-type");
 			const company = $wrap.data("company");
@@ -1118,7 +1237,7 @@ class TransactionHistoryPage {
 
 		$(m).on("click", ".btn-copy-link", (e) => {
 			e.stopPropagation();
-			const $wrap = $(e.currentTarget).closest("[data-party-type]");
+			const $wrap = $(e.currentTarget).closest(".th-party-actions");
 			const party = $wrap.data("party");
 			const party_type = $wrap.data("party-type");
 			const tab = party_type === "customer" ? "receivables" : "payables";
@@ -1127,7 +1246,7 @@ class TransactionHistoryPage {
 
 		$(m).on("click", ".btn-print-stmt", (e) => {
 			e.stopPropagation();
-			const $wrap = $(e.currentTarget).closest("[data-party-type]");
+			const $wrap = $(e.currentTarget).closest(".th-party-actions");
 			const party = $wrap.data("party");
 			const party_type = $wrap.data("party-type");
 			const company = $wrap.data("company");
@@ -1338,7 +1457,7 @@ class TransactionHistoryPage {
 
 		// Accordion: expand/collapse summary rows
 		$(m).on("click", ".summary-row", (e) => {
-			if ($(e.target).is("a")) return;
+			if ($(e.target).is("a") || $(e.target).is(".party-row-check")) return;
 			let $row = $(e.currentTarget);
 			let item_code = $row.data("item");
 			let party = $row.data("party");
@@ -1348,11 +1467,11 @@ class TransactionHistoryPage {
 
 			if (!$detail.hasClass("hidden")) {
 				$detail.addClass("hidden");
-				$row.find("td:first").text("▶");
+				$row.find("td:eq(1)").text("▶");
 				return;
 			}
 
-			$row.find("td:first").text("▼");
+			$row.find("td:eq(1)").text("▼");
 			$detail.removeClass("hidden");
 
 			if ($detail.find(".detail-content").data("loaded")) return;
@@ -1405,20 +1524,28 @@ class TransactionHistoryPage {
 						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>
+						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Due Date")}</th>
+						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Days Overdue")}</th>
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Status")}</th>
 					</tr>
 				</thead>
 				<tbody>
-					${rows.map((r, i) => `
+					${rows.map((r, i) => {
+						const overdue = r.days_overdue;
+						const overdue_style = overdue > 90 ? "color:var(--red);font-weight:700;" : overdue > 60 ? "color:var(--orange);" : "";
+						return `
 						<tr style="${i % 2 ? "background:var(--subtle-fg)" : ""}">
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${doctype_slug}/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
 							<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—"}</td>
+							<td style="padding:3px 8px;text-align:right;${overdue_style}border-bottom:1px solid var(--border-color)">${overdue != null ? overdue : "—"}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
-						</tr>`).join("")}
+						</tr>`;
+					}).join("")}
 				</tbody>
 			</table>
 			</div>`;
@@ -1477,10 +1604,14 @@ class TransactionHistoryPage {
 						<div style="font-size:18px;font-weight:700">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</div>
 					</div>
 				</div>
-				<div style="margin-bottom:12px;display:flex;gap:8px" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
-					<button class="btn btn-xs btn-default btn-copy-text">📋 ${__("Copy")}</button>
-					<button class="btn btn-xs btn-default btn-copy-link">🔗 ${__("Copy Link")}</button>
-					<button class="btn btn-xs btn-default btn-print-stmt">🖨️ ${__("Print")}</button>
+				<div style="margin-bottom:12px;display:flex;gap:4px;align-items:center">
+					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
+						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
+						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
+						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+					</div>
+					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="recv-detail-content" data-for="${customer}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -1533,12 +1664,16 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const ind = r.bucket_90_plus > 0 ? "red" : r.bucket_61_90 > 0 ? "orange" : "";
+						const has_adv = (r.unallocated_advance || 0) > 0;
+						const info_title = has_adv
+							? __("Has unallocated advance — click for details")
+							: __("Party details");
 						return `
 						<tr class="recv-summary-row" data-party="${r.customer}" data-company="${company}" data-as-of="${as_of_date}"
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.customer}" data-party-type="customer" data-company="${company}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
@@ -1550,10 +1685,11 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;text-align:right;${r.bucket_90_plus > 0 ? "color:var(--red);font-weight:700;" : ""}border-bottom:1px solid var(--border-color)">${r.bucket_90_plus > 0 ? format_currency(r.bucket_90_plus, bc) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								<div style="display:flex;gap:3px" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
-									<button class="btn btn-xs btn-default btn-copy-text" title="${__("Copy text")}">📋</button>
-									<button class="btn btn-xs btn-default btn-copy-link" title="${__("Copy link")}">🔗</button>
-									<button class="btn btn-xs btn-default btn-print-stmt" title="${__("Print")}">🖨️</button>
+								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
+									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
+									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+									<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
+									<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
 								</div>
 							</td>
 						</tr>
@@ -1595,7 +1731,7 @@ class TransactionHistoryPage {
 					${rows.map((r, i) => `
 						<tr style="${i % 2 ? "background:var(--subtle-fg)" : ""}">
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${slug}/${r.voucher_no}">${r.voucher_no}</a></td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${slug}/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.grand_total, bc)}</td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.paid, bc)}</td>
 							<td style="padding:3px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.outstanding_amount, bc)}</td>
@@ -1611,7 +1747,7 @@ class TransactionHistoryPage {
 	_copy_party_text(party_type, party, company, as_of_date, detail_rows) {
 		const is_customer = party_type === "customer";
 		const header = [
-			`${is_customer ? "Customer Statement" : "Supplier Statement"}`,
+			`Transaction List`,
 			`${is_customer ? "Customer" : "Supplier"}: ${party}`,
 			`Company: ${company}`,
 			`As Of: ${frappe.datetime.str_to_user(as_of_date)}`,
@@ -1639,12 +1775,11 @@ class TransactionHistoryPage {
 		}).catch(() => frappe.msgprint(__("Clipboard not available")));
 	}
 
-	_print_party_statement(party_type, party, company, as_of_date, detail_rows) {
+	_generate_statement_html(party_type, party, company, as_of_date, detail_rows) {
 		const is_customer = party_type === "customer";
-		const title = is_customer ? "Customer Statement" : "Supplier Statement";
 		const bc = this.base_currency;
 		const total = detail_rows.reduce((s, r) => s + (r.outstanding_amount || 0), 0);
-		const html = `<!DOCTYPE html><html><head><title>${title} — ${party}</title>
+		return `<!DOCTYPE html><html><head><title>Transaction List — ${party}</title>
 <style>
 	body{font-family:Arial,sans-serif;padding:32px;font-size:13px;color:#222}
 	h2{margin:0 0 4px}
@@ -1656,7 +1791,7 @@ class TransactionHistoryPage {
 	.total{margin-top:16px;text-align:right;font-weight:bold;font-size:14px}
 	@media print{body{padding:0}}
 </style></head><body>
-<h2>${title}</h2>
+<h2>Transaction List</h2>
 <div class="meta">
 	<strong>${is_customer ? "Customer" : "Supplier"}:</strong> ${party}<br>
 	<strong>Company:</strong> ${company}<br>
@@ -1684,11 +1819,242 @@ class TransactionHistoryPage {
 </table>
 <div class="total">Total Outstanding: ${format_number(total, null, 2)}</div>
 </body></html>`;
+	}
+
+	_print_party_statement(party_type, party, company, as_of_date, detail_rows) {
+		const html = this._generate_statement_html(party_type, party, company, as_of_date, detail_rows);
 		const win = window.open("", "_blank");
 		if (!win) { frappe.msgprint(__("Popup was blocked. Please allow popups for this site and try again.")); return; }
 		win.document.write(html);
 		win.document.close();
 		win.print();
+	}
+
+	// ── Copy-selected helpers ─────────────────────────────────────────────────
+
+	_update_copy_selected_btn(party_type, $m) {
+		const count = $m.find(`table[data-party-type="${party_type}"] .party-row-check:checked`).length;
+		const $btn = $m.find(`.btn-copy-selected-items[data-party-type="${party_type}"]`);
+		$btn.prop("disabled", count === 0)
+			.css({ opacity: count > 0 ? 1 : 0.4, cursor: count > 0 ? "pointer" : "not-allowed" });
+		$btn.find(".copy-sel-count").text(count > 0 ? __("{0} selected", [count]) : __("0 selected"));
+	}
+
+	_copy_selected_items(party_type, $m) {
+		const lines = [];
+		$m.find(`table[data-party-type="${party_type}"] .party-row-check:checked`).each((_, el) => {
+			const $row = $(el).closest(".summary-row");
+			const item_name = $row.find("td").eq(3).text().trim();
+			const last_rate = parseFloat($row.attr("data-last-rate") || 0);
+			lines.push(`${item_name}: ${format_number(last_rate, null, 2)}`);
+		});
+		if (!lines.length) return;
+		navigator.clipboard.writeText(lines.join("\n")).then(() => {
+			frappe.show_alert({ message: __("{0} item(s) copied to clipboard", [lines.length]), indicator: "green" });
+		}).catch(() => frappe.msgprint(__("Clipboard not available")));
+	}
+
+	// ── Party info dialog ─────────────────────────────────────────────────────
+
+	_show_party_info_dialog(party_type, party, company) {
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_party_details",
+			args: { party_type, party, company },
+			callback: (r) => {
+				const d = r.message || {};
+				const bc = this.base_currency;
+				const is_customer = party_type === "customer";
+				const doc = d.doc || {};
+				const stats = d.stats || {};
+
+				// ── Stats cards ───────────────────────────────────────────────
+				const card_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:10px 14px;min-width:0";
+				const lbl = (t) => `<div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;white-space:nowrap">${t}</div>`;
+				const val = (v, color) => `<div style="font-size:14px;font-weight:700;${color ? "color:" + color + ";" : ""}">${v}</div>`;
+
+				const unpaid_color = (stats.total_unpaid || 0) > 0 ? "var(--red)" : "var(--green)";
+				const adv_net = (stats.total_unpaid || 0) - (d.unallocated_total || 0);
+
+				let stats_html = `
+					<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+						<div style="${card_style}">
+							${lbl(__("Total Outstanding"))}
+							${val(format_currency(stats.total_unpaid || 0, bc), unpaid_color)}
+						</div>
+						<div style="${card_style}">
+							${lbl(__("Annual Billing"))}
+							${val(format_currency(stats.annual_billing || 0, bc))}
+						</div>
+						<div style="${card_style}">
+							${lbl(__("Lifetime Billing"))}
+							${val(format_currency(stats.lifetime_billing || 0, bc))}
+						</div>
+					</div>
+					<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+						<div style="${card_style}">
+							${lbl(__("Last Transaction"))}
+							${val(stats.last_transaction ? frappe.datetime.str_to_user(stats.last_transaction) : "—")}
+						</div>
+						<div style="${card_style}">
+							${lbl(is_customer ? __("Credit Limit") : __("Payment Terms"))}
+							${is_customer
+								? val(d.credit_limit != null ? format_currency(d.credit_limit, bc) : "—")
+								: val(doc.payment_terms || "—")
+							}
+						</div>
+						<div style="${card_style}">
+							${lbl(__("Tax ID"))}
+							${val(doc.tax_id || "—")}
+						</div>
+					</div>`;
+
+				if (d.unallocated_total > 0) {
+					stats_html += `
+					<div style="background:var(--alert-bg);border:1px solid var(--blue);border-radius:5px;padding:7px 12px;margin-bottom:14px;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+						<span>${__("Unallocated Advance")}: <strong style="color:var(--green)">${format_currency(d.unallocated_total, bc)}</strong></span>
+						<span>${__("Net Payable")}: <strong style="color:${adv_net > 0 ? "var(--red)" : "var(--green)"}">${format_currency(Math.max(0, adv_net), bc)}</strong></span>
+					</div>`;
+				}
+
+				// ── Contacts ──────────────────────────────────────────────────
+				const sec = (t) => `<div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${t}</div>`;
+
+				let contacts_html = `<span class="text-muted" style="font-size:12px">${__("No contacts found")}</span>`;
+				if (d.contacts && d.contacts.length) {
+					contacts_html = d.contacts.map(c => {
+						const name = [c.first_name, c.last_name].filter(Boolean).join(" ");
+						const email = c.email_id || "";
+						const phone = c.mobile_no || c.phone || "";
+						return `<div style="padding:7px 0;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+							<div>
+								<div style="font-size:12px;font-weight:600">${name}${c.is_primary_contact ? ` <span class="indicator-pill blue" style="font-size:9px;vertical-align:middle">${__("Primary")}</span>` : ""}</div>
+								${email ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px"><a href="mailto:${email}" style="color:inherit">${email}</a></div>` : ""}
+								${phone ? `<div style="font-size:11px;color:var(--text-muted);margin-top:1px"><a href="tel:${phone}" style="color:inherit">${phone}</a></div>` : ""}
+							</div>
+						</div>`;
+					}).join("");
+				}
+
+				// ── Address ───────────────────────────────────────────────────
+				let addr_html = `<span class="text-muted" style="font-size:12px">${__("No address on file")}</span>`;
+				if (d.address) {
+					const a = d.address;
+					const lines = [a.address_line1, a.address_line2, [a.city, a.state].filter(Boolean).join(", "), [a.pincode, a.country].filter(Boolean).join(" ")].filter(Boolean);
+					addr_html = lines.map(l => `<div style="font-size:12px;line-height:1.7">${l}</div>`).join("");
+				}
+				if (doc.mobile_no || doc.email_id) {
+					const direct = [doc.email_id ? `<a href="mailto:${doc.email_id}" style="color:inherit">${doc.email_id}</a>` : null, doc.mobile_no ? `<a href="tel:${doc.mobile_no}" style="color:inherit">${doc.mobile_no}</a>` : null].filter(Boolean);
+					addr_html += `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">${direct.join(" · ")}</div>`;
+				}
+				if (is_customer && doc.payment_terms) {
+					addr_html += `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">${__("Payment Terms")}: ${doc.payment_terms}</div>`;
+				}
+
+				// ── Unallocated advance table ──────────────────────────────────
+				let adv_html = "";
+				if (d.unallocated_payments && d.unallocated_payments.length) {
+					const rows_html = d.unallocated_payments.map((p, i) => `
+						<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/payment-entry/${p.name}" target="_blank">${p.name}</a></td>
+							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(p.posting_date)}</td>
+							<td style="padding:3px 8px;text-align:right;font-weight:700;color:var(--green);border-bottom:1px solid var(--border-color)">${format_currency(p.unallocated_amount, bc)}</td>
+						</tr>`).join("");
+					adv_html = `
+						<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color)">
+							${sec(__("Unallocated Advances"))}
+							<div style="overflow-x:auto">
+							<table style="width:100%;border-collapse:collapse;font-size:11px">
+								<thead><tr style="background:var(--subtle-fg)">
+									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Payment Entry")}</th>
+									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
+									<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Unallocated")}</th>
+								</tr></thead>
+								<tbody>${rows_html}</tbody>
+							</table>
+							</div>
+						</div>`;
+				}
+
+				const dialog = new frappe.ui.Dialog({ title: party, size: "large" });
+				dialog.$body.html(`
+					<div style="padding:4px 0">
+						${stats_html}
+						<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+							<div>
+								${sec(__("Contacts"))}
+								${contacts_html}
+							</div>
+							<div>
+								${sec(__("Address"))}
+								${addr_html}
+							</div>
+						</div>
+						${adv_html}
+					</div>`);
+				dialog.show();
+			},
+		});
+	}
+
+	// ── Email dialog ──────────────────────────────────────────────────────────
+
+	_show_email_dialog(party_type, party, company, as_of_date, detail_rows) {
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_party_details",
+			args: { party_type, party },
+			callback: (r) => {
+				const primary_email = (r.message || {}).primary_email || "";
+				const html = this._generate_statement_html(party_type, party, company, as_of_date, detail_rows);
+
+				const blob = new Blob([html], { type: "text/html" });
+				const preview_url = URL.createObjectURL(blob);
+
+				const dialog = new frappe.ui.Dialog({
+					title: __("Email Transaction List — {0}", [party]),
+					size: "extra-large",
+					fields: [
+						{
+							fieldname: "recipient", fieldtype: "Data",
+							label: __("To"), reqd: 1, default: primary_email,
+						},
+						{
+							fieldname: "cc", fieldtype: "Data",
+							label: __("CC"),
+						},
+						{
+							fieldname: "bcc", fieldtype: "Data",
+							label: __("BCC"),
+						},
+						{
+							fieldname: "preview_html", fieldtype: "HTML",
+							options: `<div style="margin-top:10px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${__("Preview")}</div>
+								<iframe src="${preview_url}" style="width:100%;height:420px;border:1px solid var(--border-color);border-radius:4px;background:#fff"></iframe>`,
+						},
+					],
+					primary_action_label: __("Send"),
+					primary_action: (values) => {
+						dialog.hide();
+						frappe.show_alert({ message: __("Sending email…"), indicator: "blue" });
+						frappe.call({
+							method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.send_statement_email",
+							args: {
+								party_type, party, company, as_of_date,
+								html_content: html,
+								recipient_email: values.recipient,
+								cc: values.cc || "",
+								bcc: values.bcc || "",
+							},
+							callback: () => {
+								URL.revokeObjectURL(preview_url);
+								frappe.show_alert({ message: __("Email sent"), indicator: "green" });
+							},
+						});
+					},
+				});
+				dialog.onhide = () => URL.revokeObjectURL(preview_url);
+				dialog.show();
+			},
+		});
 	}
 
 	// ── Payables ──────────────────────────────────────────────────────────────
@@ -1744,10 +2110,14 @@ class TransactionHistoryPage {
 						<div style="font-size:18px;font-weight:700">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</div>
 					</div>
 				</div>
-				<div style="margin-bottom:12px;display:flex;gap:8px" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
-					<button class="btn btn-xs btn-default btn-copy-text">📋 ${__("Copy")}</button>
-					<button class="btn btn-xs btn-default btn-copy-link">🔗 ${__("Copy Link")}</button>
-					<button class="btn btn-xs btn-default btn-print-stmt">🖨️ ${__("Print")}</button>
+				<div style="margin-bottom:12px;display:flex;gap:4px;align-items:center">
+					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
+						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
+						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
+						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+					</div>
+					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="pay-detail-content" data-for="${supplier}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -1800,12 +2170,16 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const ind = r.bucket_90_plus > 0 ? "red" : r.bucket_61_90 > 0 ? "orange" : "";
+						const has_adv = (r.unallocated_advance || 0) > 0;
+						const info_title = has_adv
+							? __("Has unallocated advance — click for details")
+							: __("Party details");
 						return `
 						<tr class="pay-summary-row" data-party="${r.supplier}" data-company="${company}" data-as-of="${as_of_date}"
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.supplier_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
@@ -1817,10 +2191,11 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;text-align:right;${r.bucket_90_plus > 0 ? "color:var(--red);font-weight:700;" : ""}border-bottom:1px solid var(--border-color)">${r.bucket_90_plus > 0 ? format_currency(r.bucket_90_plus, bc) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								<div style="display:flex;gap:3px" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
-									<button class="btn btn-xs btn-default btn-copy-text" title="${__("Copy text")}">📋</button>
-									<button class="btn btn-xs btn-default btn-copy-link" title="${__("Copy link")}">🔗</button>
-									<button class="btn btn-xs btn-default btn-print-stmt" title="${__("Print")}">🖨️</button>
+								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
+									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
+									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+									<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
+									<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
 								</div>
 							</td>
 						</tr>
@@ -2039,7 +2414,7 @@ class TransactionHistoryPage {
 						${purchases.length ? purchases.map((r, i) => `
 							<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${r.doctype === "Purchase Receipt" ? "purchase-receipt" : "purchase-invoice"}/${r.voucher_no}">${r.voucher_no}</a></td>
+								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/${r.doctype === "Purchase Receipt" ? "purchase-receipt" : "purchase-invoice"}/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.supplier || ""}</td>
 								<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
@@ -2065,7 +2440,7 @@ class TransactionHistoryPage {
 						${filtered_sales.length ? filtered_sales.map((r, i) => `
 							<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(r.date)}</td>
-								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/sales-invoice/${r.voucher_no}">${r.voucher_no}</a></td>
+								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/sales-invoice/${r.voucher_no}" target="_blank">${r.voucher_no}</a></td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer || ""}</td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer_group || ""}</td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.selling_price_list || ""}</td>
@@ -2139,7 +2514,7 @@ class TransactionHistoryPage {
 			if (!$("#th-warehouse-popover").length) return; // already closed
 			const rows = r.message || [];
 			if (!rows.length) {
-				$pop.find(".th-whpop-body").html(`<span>${__("No warehouses found")}</span>`);
+				$pop.find(".th-whpop-body").html(`<span>${__("No stock in any warehouse")}</span>`);
 				return;
 			}
 			const tbody = rows.map(w => `

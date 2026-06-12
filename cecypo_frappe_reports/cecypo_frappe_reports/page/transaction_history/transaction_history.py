@@ -52,17 +52,24 @@ def get_customer_history(customer, company, from_date=None, to_date=None):
 		query = query.where(si.posting_date <= to_date)
 
 	rows = query.run(as_dict=True)
+	item_codes = [r["item_code"] for r in rows]
+	stock_map = _get_items_stock_map(item_codes, company) if rows else {}
+	last_rate_map = _get_customer_last_rate_map(customer, company, item_codes, from_date, to_date) if rows else {}
 	for r in rows:
 		r["total_qty"] = flt(r["total_qty"], 2)
 		r["avg_rate"] = flt(r["avg_rate"], 2)
 		r["total_amount"] = flt(r["total_amount"], 2)
 		r["overdue_count"] = r.get("overdue_count") or 0
 		r["unpaid_count"] = r.get("unpaid_count") or 0
+		r["current_stock"] = stock_map.get(r["item_code"], 0.0)
+		r["last_rate"] = last_rate_map.get(r["item_code"], 0.0)
 	return rows
 
 
 @frappe.whitelist()
 def get_customer_item_transactions(customer, item_code, company, from_date=None, to_date=None):
+	from frappe.utils import getdate, today
+
 	sii = frappe.qb.DocType("Sales Invoice Item")
 	si = frappe.qb.DocType("Sales Invoice")
 
@@ -77,6 +84,7 @@ def get_customer_item_transactions(customer, item_code, company, from_date=None,
 			sii.rate,
 			si.currency,
 			sii.base_rate,
+			si.due_date,
 			si.status,
 		)
 		.where(si.docstatus == 1)
@@ -90,11 +98,14 @@ def get_customer_item_transactions(customer, item_code, company, from_date=None,
 	if to_date:
 		query = query.where(si.posting_date <= to_date)
 
+	as_of = getdate(today())
 	rows = query.run(as_dict=True)
 	for r in rows:
 		r["qty"] = flt(r["qty"], 2)
 		r["rate"] = flt(r["rate"], 2)
 		r["base_rate"] = flt(r["base_rate"], 2)
+		due = getdate(r.due_date) if r.due_date else getdate(r.date)
+		r["days_overdue"] = max(0, (as_of - due).days) if r.status not in ("Paid", "Return", "Credit Note Issued") else 0
 	return rows
 
 
@@ -160,17 +171,24 @@ def get_supplier_history(supplier, company, from_date=None, to_date=None, source
 			query = query.where(pr.posting_date <= to_date)
 
 	rows = query.run(as_dict=True)
+	item_codes = [r["item_code"] for r in rows]
+	stock_map = _get_items_stock_map(item_codes, company) if rows else {}
+	last_rate_map = _get_supplier_last_rate_map(supplier, company, item_codes, source, from_date, to_date) if rows else {}
 	for r in rows:
 		r["total_qty"] = flt(r["total_qty"], 2)
 		r["avg_valuation_rate"] = flt(r["avg_valuation_rate"], 2)
 		r["total_amount"] = flt(r["total_amount"], 2)
 		r["overdue_count"] = r.get("overdue_count") or 0
 		r["unpaid_count"] = r.get("unpaid_count") or 0
+		r["current_stock"] = stock_map.get(r["item_code"], 0.0)
+		r["last_rate"] = last_rate_map.get(r["item_code"], 0.0)
 	return rows
 
 
 @frappe.whitelist()
 def get_supplier_item_transactions(supplier, item_code, company, from_date=None, to_date=None, source="pi"):
+	from frappe.utils import getdate, today
+
 	if source == "pi":
 		pii = frappe.qb.DocType("Purchase Invoice Item")
 		pi = frappe.qb.DocType("Purchase Invoice")
@@ -186,6 +204,7 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 				pii.rate,
 				pi.currency,
 				pii.valuation_rate,
+				pi.due_date,
 				pi.status,
 			)
 			.where(pi.docstatus == 1)
@@ -199,6 +218,15 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 			query = query.where(pi.posting_date >= from_date)
 		if to_date:
 			query = query.where(pi.posting_date <= to_date)
+
+		as_of = getdate(today())
+		rows = query.run(as_dict=True)
+		for r in rows:
+			r["qty"] = flt(r["qty"], 2)
+			r["rate"] = flt(r["rate"], 2)
+			r["valuation_rate"] = flt(r["valuation_rate"], 2)
+			due = getdate(r.due_date) if r.due_date else getdate(r.date)
+			r["days_overdue"] = max(0, (as_of - due).days) if r.status not in ("Paid", "Return", "Debit Note Issued") else 0
 	else:
 		pri = frappe.qb.DocType("Purchase Receipt Item")
 		pr = frappe.qb.DocType("Purchase Receipt")
@@ -227,11 +255,13 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 		if to_date:
 			query = query.where(pr.posting_date <= to_date)
 
-	rows = query.run(as_dict=True)
-	for r in rows:
-		r["qty"] = flt(r["qty"], 2)
-		r["rate"] = flt(r["rate"], 2)
-		r["valuation_rate"] = flt(r["valuation_rate"], 2)
+		rows = query.run(as_dict=True)
+		for r in rows:
+			r["qty"] = flt(r["qty"], 2)
+			r["rate"] = flt(r["rate"], 2)
+			r["valuation_rate"] = flt(r["valuation_rate"], 2)
+			r["due_date"] = None
+			r["days_overdue"] = None  # PRs have no payment due date
 	return rows
 
 
@@ -301,9 +331,25 @@ def get_receivables(company, as_of_date, customer=None):
 		bucket = _calculate_aging_bucket(due, as_of)
 		a[bucket] = flt(a[bucket] + oa, 2)
 
+	# Unallocated advances per customer
+	adv_q = (
+		frappe.qb.from_(pe)
+		.select(pe.party.as_("customer"), fn.Sum(pe.unallocated_amount).as_("unallocated_advance"))
+		.where(pe.docstatus == 1)
+		.where(pe.payment_type == "Receive")
+		.where(pe.party_type == "Customer")
+		.where(pe.company == company)
+		.where(pe.unallocated_amount > 0)
+		.groupby(pe.party)
+	)
+	if customer:
+		adv_q = adv_q.where(pe.party == customer)
+	unallocated = {r.customer: flt(r.unallocated_advance, 2) for r in adv_q.run(as_dict=True)}
+
 	result = []
 	for cust_name, data in agg.items():
 		data["last_payment"] = last_payments.get(cust_name)
+		data["unallocated_advance"] = unallocated.get(cust_name, 0.0)
 		result.append(data)
 	result.sort(key=lambda x: x["outstanding"], reverse=True)
 	return result
@@ -410,9 +456,25 @@ def get_payables(company, as_of_date, supplier=None):
 		bucket = _calculate_aging_bucket(due, as_of)
 		a[bucket] = flt(a[bucket] + oa, 2)
 
+	# Unallocated advances per supplier
+	adv_q = (
+		frappe.qb.from_(pe)
+		.select(pe.party.as_("supplier"), fn.Sum(pe.unallocated_amount).as_("unallocated_advance"))
+		.where(pe.docstatus == 1)
+		.where(pe.payment_type == "Pay")
+		.where(pe.party_type == "Supplier")
+		.where(pe.company == company)
+		.where(pe.unallocated_amount > 0)
+		.groupby(pe.party)
+	)
+	if supplier:
+		adv_q = adv_q.where(pe.party == supplier)
+	unallocated = {r.supplier: flt(r.unallocated_advance, 2) for r in adv_q.run(as_dict=True)}
+
 	result = []
 	for supp_name, data in agg.items():
 		data["last_payment"] = last_payments.get(supp_name)
+		data["unallocated_advance"] = unallocated.get(supp_name, 0.0)
 		result.append(data)
 	result.sort(key=lambda x: x["outstanding"], reverse=True)
 	return result
@@ -520,19 +582,271 @@ def get_warehouse_stock(item_code, company):
 	Wh = frappe.qb.DocType("Warehouse")
 	Bn = frappe.qb.DocType("Bin")
 	rows = (
-		frappe.qb.from_(Wh)
-		.left_join(Bn).on((Bn.warehouse == Wh.name) & (Bn.item_code == item_code))
-		.select(Wh.name.as_("warehouse"), Wh.warehouse_name, fn.IfNull(Bn.actual_qty, 0).as_("actual_qty"))
+		frappe.qb.from_(Bn)
+		.inner_join(Wh).on(Bn.warehouse == Wh.name)
+		.select(Wh.name.as_("warehouse"), Wh.warehouse_name, Bn.actual_qty)
+		.where(Bn.item_code == item_code)
 		.where(Wh.company == company)
 		.where(Wh.disabled == 0)
 		.where(Wh.is_group == 0)
+		.where(Bn.actual_qty > 0)
 		.orderby(Bn.actual_qty, order=frappe.qb.desc)
 		.run(as_dict=True)
 	)
 	return rows
 
 
+@frappe.whitelist()
+def get_party_details(party_type, party, company=None):
+	"""Return full profile: contacts, address, account stats, and unallocated advances."""
+	from pypika import Case
+	from frappe.utils import getdate, nowdate
+
+	is_customer = party_type.lower() == "customer"
+	doctype = "Customer" if is_customer else "Supplier"
+
+	# Core doc fields
+	doc = frappe.db.get_value(
+		doctype, party,
+		["name", "email_id", "mobile_no", "payment_terms", "tax_id"],
+		as_dict=True,
+	) or {}
+
+	# Primary address
+	address = None
+	addr_name = frappe.db.get_value(
+		"Dynamic Link",
+		{"link_doctype": doctype, "link_name": party, "parenttype": "Address"},
+		"parent",
+	)
+	if addr_name:
+		address = frappe.db.get_value(
+			"Address", addr_name,
+			["address_line1", "address_line2", "city", "state", "country", "pincode"],
+			as_dict=True,
+		)
+
+	# Contacts (up to 5, primary first)
+	contact_links = frappe.db.get_all(
+		"Dynamic Link",
+		filters={"link_doctype": doctype, "link_name": party, "parenttype": "Contact"},
+		fields=["parent"],
+		limit=5,
+	)
+	contacts = []
+	for cl in contact_links:
+		c = frappe.db.get_value(
+			"Contact", cl.parent,
+			["first_name", "last_name", "email_id", "phone", "mobile_no", "is_primary_contact"],
+			as_dict=True,
+		)
+		if c:
+			contacts.append(c)
+	contacts.sort(key=lambda x: x.get("is_primary_contact") or 0, reverse=True)
+
+	# Account stats
+	today_dt = getdate(nowdate())
+	year_start = str(today_dt.replace(month=1, day=1))
+	stats = {"annual_billing": 0.0, "lifetime_billing": 0.0, "total_unpaid": 0.0, "last_transaction": None}
+
+	if is_customer:
+		si = frappe.qb.DocType("Sales Invoice")
+		sq = (
+			frappe.qb.from_(si)
+			.select(
+				fn.Sum(si.grand_total).as_("lifetime_billing"),
+				fn.Sum(si.outstanding_amount).as_("total_unpaid"),
+				fn.Max(si.posting_date).as_("last_transaction"),
+				fn.Sum(Case().when(si.posting_date >= year_start, si.grand_total).else_(0)).as_("annual_billing"),
+			)
+			.where(si.docstatus == 1)
+			.where(si.customer == party)
+		)
+		if company:
+			sq = sq.where(si.company == company)
+	else:
+		pi = frappe.qb.DocType("Purchase Invoice")
+		sq = (
+			frappe.qb.from_(pi)
+			.select(
+				fn.Sum(pi.grand_total).as_("lifetime_billing"),
+				fn.Sum(pi.outstanding_amount).as_("total_unpaid"),
+				fn.Max(pi.posting_date).as_("last_transaction"),
+				fn.Sum(Case().when(pi.posting_date >= year_start, pi.grand_total).else_(0)).as_("annual_billing"),
+			)
+			.where(pi.docstatus == 1)
+			.where(pi.supplier == party)
+		)
+		if company:
+			sq = sq.where(pi.company == company)
+
+	rows = sq.run(as_dict=True)
+	if rows and rows[0].get("lifetime_billing") is not None:
+		stats = rows[0]
+		stats["annual_billing"] = flt(stats.get("annual_billing") or 0, 2)
+		stats["lifetime_billing"] = flt(stats.get("lifetime_billing") or 0, 2)
+		stats["total_unpaid"] = flt(stats.get("total_unpaid") or 0, 2)
+
+	# Credit limit (customer only, for the given company)
+	credit_limit = None
+	if is_customer and company:
+		credit_limit = frappe.db.get_value(
+			"Customer Credit Limit",
+			{"parent": party, "company": company},
+			"credit_limit",
+		)
+		if credit_limit is not None:
+			credit_limit = flt(credit_limit, 2)
+
+	# Unallocated payment entries
+	pay_type = "Receive" if is_customer else "Pay"
+	pe = frappe.qb.DocType("Payment Entry")
+	adv_rows = (
+		frappe.qb.from_(pe)
+		.select(pe.name, pe.posting_date, pe.paid_amount, pe.unallocated_amount)
+		.where(pe.docstatus == 1)
+		.where(pe.payment_type == pay_type)
+		.where(pe.party_type == doctype)
+		.where(pe.party == party)
+		.where(pe.unallocated_amount > 0)
+		.orderby(pe.posting_date, order=frappe.qb.desc)
+		.run(as_dict=True)
+	)
+	for r in adv_rows:
+		r["paid_amount"] = flt(r["paid_amount"], 2)
+		r["unallocated_amount"] = flt(r["unallocated_amount"], 2)
+
+	unallocated_total = flt(sum(r["unallocated_amount"] for r in adv_rows), 2)
+
+	primary_email = (
+		next((c.get("email_id") for c in contacts if c.get("email_id")), None)
+		or doc.get("email_id")
+		or ""
+	)
+
+	return {
+		"doc": doc,
+		"address": address,
+		"contacts": contacts,
+		"stats": stats,
+		"credit_limit": credit_limit,
+		"unallocated_payments": adv_rows,
+		"unallocated_total": unallocated_total,
+		"primary_email": primary_email,
+	}
+
+
+@frappe.whitelist()
+def send_statement_email(party_type, party, company, as_of_date, html_content, recipient_email, cc="", bcc=""):
+	"""Send a transaction list statement as HTML email in the background."""
+	def split_emails(s):
+		return [e.strip() for e in s.replace(";", ",").split(",") if e.strip()] if s else []
+
+	frappe.sendmail(
+		recipients=[recipient_email],
+		cc=split_emails(cc),
+		bcc=split_emails(bcc),
+		subject=_("Transaction List — {0} as of {1}").format(party, as_of_date),
+		message=html_content,
+		now=False,
+	)
+	return True
+
+
 # ── Private helpers ──────────────────────────────────────────────────────────
+
+def _get_items_stock_map(item_codes, company):
+	"""Return {item_code: total_actual_qty} across all non-group warehouses for the company."""
+	if not item_codes:
+		return {}
+	Wh = frappe.qb.DocType("Warehouse")
+	Bn = frappe.qb.DocType("Bin")
+	rows = (
+		frappe.qb.from_(Bn)
+		.inner_join(Wh).on(Bn.warehouse == Wh.name)
+		.select(Bn.item_code, fn.Sum(Bn.actual_qty).as_("actual_qty"))
+		.where(Bn.item_code.isin(item_codes))
+		.where(Wh.company == company)
+		.where(Wh.disabled == 0)
+		.where(Wh.is_group == 0)
+		.groupby(Bn.item_code)
+		.run(as_dict=True)
+	)
+	return {r["item_code"]: flt(r["actual_qty"], 2) for r in rows}
+
+
+def _get_customer_last_rate_map(customer, company, item_codes, from_date=None, to_date=None):
+	"""Return {item_code: base_rate} from the most recent SI line per item."""
+	if not item_codes:
+		return {}
+	sii = frappe.qb.DocType("Sales Invoice Item")
+	si = frappe.qb.DocType("Sales Invoice")
+	q = (
+		frappe.qb.from_(sii)
+		.inner_join(si).on(sii.parent == si.name)
+		.select(sii.item_code, sii.base_rate, si.posting_date)
+		.where(si.docstatus == 1)
+		.where(si.customer == customer)
+		.where(si.company == company)
+		.where(sii.item_code.isin(item_codes))
+		.orderby(si.posting_date, order=frappe.qb.desc)
+	)
+	if from_date:
+		q = q.where(si.posting_date >= from_date)
+	if to_date:
+		q = q.where(si.posting_date <= to_date)
+	result = {}
+	for rec in q.run(as_dict=True):
+		if rec["item_code"] not in result:
+			result[rec["item_code"]] = flt(rec["base_rate"], 2)
+	return result
+
+
+def _get_supplier_last_rate_map(supplier, company, item_codes, source="pi", from_date=None, to_date=None):
+	"""Return {item_code: valuation_rate} from the most recent PI/PR line per item."""
+	if not item_codes:
+		return {}
+	if source == "pi":
+		pii = frappe.qb.DocType("Purchase Invoice Item")
+		pi = frappe.qb.DocType("Purchase Invoice")
+		q = (
+			frappe.qb.from_(pii)
+			.inner_join(pi).on(pii.parent == pi.name)
+			.select(pii.item_code, pii.valuation_rate, pi.posting_date)
+			.where(pi.docstatus == 1)
+			.where(pi.update_stock == 1)
+			.where(pi.supplier == supplier)
+			.where(pi.company == company)
+			.where(pii.item_code.isin(item_codes))
+			.orderby(pi.posting_date, order=frappe.qb.desc)
+		)
+		if from_date:
+			q = q.where(pi.posting_date >= from_date)
+		if to_date:
+			q = q.where(pi.posting_date <= to_date)
+	else:
+		pri = frappe.qb.DocType("Purchase Receipt Item")
+		pr = frappe.qb.DocType("Purchase Receipt")
+		q = (
+			frappe.qb.from_(pri)
+			.inner_join(pr).on(pri.parent == pr.name)
+			.select(pri.item_code, pri.valuation_rate, pr.posting_date)
+			.where(pr.docstatus == 1)
+			.where(pr.supplier == supplier)
+			.where(pr.company == company)
+			.where(pri.item_code.isin(item_codes))
+			.orderby(pr.posting_date, order=frappe.qb.desc)
+		)
+		if from_date:
+			q = q.where(pr.posting_date >= from_date)
+		if to_date:
+			q = q.where(pr.posting_date <= to_date)
+	result = {}
+	for rec in q.run(as_dict=True):
+		if rec["item_code"] not in result:
+			result[rec["item_code"]] = flt(rec["valuation_rate"], 2)
+	return result
+
 
 def _calculate_aging_bucket(due_date, as_of_date):
 	"""Return the aging bucket key for an invoice due on due_date as of as_of_date.
