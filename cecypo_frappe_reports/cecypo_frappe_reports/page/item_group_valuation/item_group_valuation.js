@@ -47,15 +47,15 @@ class ItemGroupValuationPage {
 	}
 
 	_table_shell_html() {
-		return `<div style="padding:16px">
+		return `<div style="padding:16px;max-width:860px">
 			<table style="width:100%;border-collapse:collapse;font-size:13px" id="igv-table">
 				<thead>
 					<tr style="background:var(--subtle-fg,#f4f5f6)">
 						<th style="padding:8px 12px;width:32px;border-bottom:2px solid var(--border-color)"></th>
 						<th style="padding:8px 12px;text-align:left;border-bottom:2px solid var(--border-color)">${__("Item Group / Item")}</th>
-						<th style="padding:8px 12px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Qty")}</th>
-						<th style="padding:8px 12px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Valuation Rate")}</th>
-						<th style="padding:8px 12px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Value")}</th>
+						<th style="padding:8px 12px;width:90px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Qty")}</th>
+						<th style="padding:8px 12px;width:130px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Valuation Rate")}</th>
+						<th style="padding:8px 12px;width:130px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Value")}</th>
 					</tr>
 				</thead>
 				<tbody id="igv-tbody">
