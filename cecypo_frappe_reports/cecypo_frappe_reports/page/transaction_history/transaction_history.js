@@ -67,6 +67,28 @@ class TransactionHistoryPage {
 					margin-bottom: 12px;
 				}
 				.item-results-grid { grid-template-columns: 1fr !important; }
+				.pricing-body { flex-direction: column !important; }
+				.pricing-panel-sidebar {
+					width: 100% !important;
+					min-width: 0 !important;
+					margin-right: 0 !important;
+					margin-bottom: 12px !important;
+				}
+				.transaction-history { padding: 8px !important; }
+				.transaction-history .nav-tabs {
+					flex-wrap: nowrap !important;
+					overflow-x: auto;
+					-webkit-overflow-scrolling: touch;
+					scrollbar-width: none;
+					padding-bottom: 2px;
+				}
+				.transaction-history .nav-tabs::-webkit-scrollbar { display: none; }
+				.th-metrics-3col { grid-template-columns: 1fr !important; }
+				.th-stats-3col { grid-template-columns: 1fr 1fr !important; }
+				.th-panel > div[style*="display:flex"] > div[style*="min-width"] {
+					min-width: 0 !important;
+					width: 100% !important;
+				}
 			}
 			.th-action-btn {
 				display: inline-flex;
@@ -525,7 +547,7 @@ class TransactionHistoryPage {
 		const col_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px";
 
 		return `
-			<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+			<div class="th-metrics-3col" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
 				<div style="${col_style}">
 					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Item Details")}</div>
 					${row(__("Name"), d.item_name, true)}
@@ -1590,7 +1612,7 @@ class TransactionHistoryPage {
 			const r = rows[0];
 			const oldest = r.bucket_90_plus > 0 ? "90+" : r.bucket_61_90 > 0 ? "61–90" : r.bucket_31_60 > 0 ? "31–60" : __("Current");
 			$content.html(`
-				<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+				<div class="th-stats-3col" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
 					<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px">
 						<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px">${__("Total Outstanding")}</div>
 						<div style="font-size:18px;font-weight:700;color:var(--red)">${format_currency(r.outstanding, bc)}</div>
@@ -2096,7 +2118,7 @@ class TransactionHistoryPage {
 			const r = rows[0];
 			const oldest = r.bucket_90_plus > 0 ? "90+" : r.bucket_61_90 > 0 ? "61–90" : r.bucket_31_60 > 0 ? "31–60" : __("Current");
 			$content.html(`
-				<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+				<div class="th-stats-3col" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
 					<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px">
 						<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px">${__("Total Outstanding")}</div>
 						<div style="font-size:18px;font-weight:700;color:var(--orange)">${format_currency(r.outstanding, bc)}</div>
