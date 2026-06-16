@@ -243,5 +243,37 @@ class ItemGroupValuationPage {
 				},
 			});
 		});
+
+		$(this.page.main).on("click", ".cecypo-sort-header", (e) => {
+			const $th = $(e.currentTarget);
+			const key = $th.data("sortKey");
+			const $table = $th.closest("table");
+			const $tbody = $table.children("tbody");
+			const $tfoot = $table.children("tfoot");
+			const rows = $tbody.data("rows");
+			if (!rows) return;
+			const indent = parseInt($tbody.data("indent") || 0, 10);
+
+			const prev = $tbody.data("sort") || { key: null, dir: null };
+			const dir = prev.key === key && prev.dir === "asc" ? "desc" : "asc";
+
+			$tbody.children(".igv-group-row").each((_, el) => {
+				const $row = $(el);
+				const $detail = $row.next(".igv-detail-row");
+				if (!$detail.hasClass("hidden")) {
+					$detail.addClass("hidden");
+					$row.find("td:first").text("▶");
+				}
+			});
+
+			const column = IGV_COLUMNS.find((c) => c.key === key);
+			const sorted = window.cecypo_reports.sortableTable.sortRows(rows, column, dir);
+
+			$tbody.empty();
+			this._render_rows(sorted, $tbody, indent);
+			$tbody.data("sort", { key, dir });
+			$table.children("thead").html(this._thead_row_html({ key, dir }));
+			this._render_total_row(rows, $tfoot);
+		});
 	}
 }
