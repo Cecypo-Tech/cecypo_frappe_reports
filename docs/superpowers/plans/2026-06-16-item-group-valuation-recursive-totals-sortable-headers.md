@@ -39,7 +39,7 @@ window.cecypo_reports.sortableTable = (function () {
 			.text(
 				".cecypo-sort-header { cursor: pointer; user-select: none; }\n" +
 					".cecypo-sort-header .sort-indicator { color: var(--text-muted); margin-left: 4px; font-size: 11px; }\n" +
-					".cecypo-total-row td { background: var(--subtle-accent, #eef6fb); font-weight: 600; border-top: 2px solid var(--border-color); padding: 8px 12px; }"
+					".cecypo-total-row td { background: var(--subtle-accent, #eef6fb); font-weight: 600; border-top: 2px solid var(--border-color); border-bottom: 2px solid var(--border-color); padding: 8px 12px; }"
 			)
 			.appendTo("head");
 	}
