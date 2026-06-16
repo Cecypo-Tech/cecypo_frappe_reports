@@ -31,9 +31,9 @@ const IGV_COLUMNS = [
 	},
 	{
 		key: "valuation_rate",
-		label: __("Valuation Rate"),
+		label: __("Avg Valuation"),
 		align: "right",
-		width: 130,
+		width: 135,
 		type: "number",
 		sortable: true,
 		value: (row) => row.valuation_rate,
