@@ -61,6 +61,7 @@ class ItemGroupValuationPage {
 				<tbody id="igv-tbody">
 					<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted)">${__("Select filters and click Refresh")}</td></tr>
 				</tbody>
+				<tfoot id="igv-tfoot"></tfoot>
 			</table>
 		</div>`;
 	}
@@ -76,7 +77,9 @@ class ItemGroupValuationPage {
 
 		this._cache = {};
 		const $tbody = $("#igv-tbody");
+		const $tfoot = $("#igv-tfoot");
 		$tbody.html(`<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted)">${__("Loading...")}</td></tr>`);
+		$tfoot.empty();
 
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.item_group_valuation.item_group_valuation.get_top_level_groups",
@@ -85,10 +88,12 @@ class ItemGroupValuationPage {
 				const rows = r.message || [];
 				if (!rows.length) {
 					$tbody.html(`<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted)">${__("No data found")}</td></tr>`);
+					$tfoot.empty();
 					return;
 				}
 				$tbody.empty();
 				this._render_rows(rows, $tbody, 0);
+				this._render_total_row(rows, $tfoot);
 			},
 		});
 	}
@@ -138,6 +143,19 @@ class ItemGroupValuationPage {
 				</tr>`);
 			}
 		});
+	}
+
+	_render_total_row(rows, $tfoot) {
+		const qty_total = rows.reduce((sum, row) => sum + (row.qty || 0), 0);
+		const value_total = rows.reduce((sum, row) => sum + (row.value || 0), 0);
+		$tfoot.html(`
+			<tr style="font-weight:600;border-top:2px solid var(--border-color)">
+				<td style="padding:8px 12px"></td>
+				<td style="padding:8px 12px">${__("Total")}</td>
+				<td style="padding:8px 12px;text-align:right">${this._fmt_num(qty_total)}</td>
+				<td style="padding:8px 12px;text-align:right">—</td>
+				<td style="padding:8px 12px;text-align:right">${this._fmt_num(value_total)}</td>
+			</tr>`);
 	}
 
 	_bind_events() {
