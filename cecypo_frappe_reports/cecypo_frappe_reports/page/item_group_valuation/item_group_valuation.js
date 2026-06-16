@@ -10,6 +10,46 @@ frappe.pages["item-group-valuation"].on_page_load = function (wrapper) {
 	new ItemGroupValuationPage(wrapper);
 };
 
+const IGV_COLUMNS = [
+	{
+		key: "name",
+		label: __("Item Group / Item"),
+		align: "left",
+		type: "text",
+		sortable: true,
+		value: (row) => (row.is_group ? row.item_group : row.item_code),
+	},
+	{
+		key: "qty",
+		label: __("Qty"),
+		align: "right",
+		width: 90,
+		type: "number",
+		sortable: true,
+		summable: true,
+		value: (row) => row.qty,
+	},
+	{
+		key: "valuation_rate",
+		label: __("Valuation Rate"),
+		align: "right",
+		width: 130,
+		type: "number",
+		sortable: true,
+		value: (row) => row.valuation_rate,
+	},
+	{
+		key: "value",
+		label: __("Value"),
+		align: "right",
+		width: 130,
+		type: "number",
+		sortable: true,
+		summable: true,
+		value: (row) => row.value,
+	},
+];
+
 class ItemGroupValuationPage {
 	constructor(wrapper) {
 		this.page = wrapper.page;
@@ -46,18 +86,18 @@ class ItemGroupValuationPage {
 		this._bind_events();
 	}
 
+	_thead_row_html(sort_state) {
+		const ST = window.cecypo_reports.sortableTable;
+		return `<tr style="background:var(--subtle-fg,#f4f5f6)">
+			<th style="padding:8px 12px;width:32px;border-bottom:2px solid var(--border-color)"></th>
+			${ST.theadCellsHtml(IGV_COLUMNS, sort_state)}
+		</tr>`;
+	}
+
 	_table_shell_html() {
 		return `<div style="padding:16px;max-width:860px">
 			<table style="width:100%;border-collapse:collapse;font-size:13px" id="igv-table">
-				<thead>
-					<tr style="background:var(--subtle-fg,#f4f5f6)">
-						<th style="padding:8px 12px;width:32px;border-bottom:2px solid var(--border-color)"></th>
-						<th style="padding:8px 12px;text-align:left;border-bottom:2px solid var(--border-color)">${__("Item Group / Item")}</th>
-						<th style="padding:8px 12px;width:90px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Qty")}</th>
-						<th style="padding:8px 12px;width:130px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Valuation Rate")}</th>
-						<th style="padding:8px 12px;width:130px;text-align:right;border-bottom:2px solid var(--border-color)">${__("Value")}</th>
-					</tr>
-				</thead>
+				<thead>${this._thead_row_html(null)}</thead>
 				<tbody id="igv-tbody">
 					<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-muted)">${__("Select filters and click Refresh")}</td></tr>
 				</tbody>
@@ -146,16 +186,13 @@ class ItemGroupValuationPage {
 	}
 
 	_render_total_row(rows, $tfoot) {
-		const qty_total = rows.reduce((sum, row) => sum + (row.qty || 0), 0);
-		const value_total = rows.reduce((sum, row) => sum + (row.value || 0), 0);
-		$tfoot.html(`
-			<tr style="font-weight:600;border-top:2px solid var(--border-color)">
-				<td style="padding:8px 12px"></td>
-				<td style="padding:8px 12px">${__("Total")}</td>
-				<td style="padding:8px 12px;text-align:right">${this._fmt_num(qty_total)}</td>
-				<td style="padding:8px 12px;text-align:right">—</td>
-				<td style="padding:8px 12px;text-align:right">${this._fmt_num(value_total)}</td>
-			</tr>`);
+		const ST = window.cecypo_reports.sortableTable;
+		const cells = ST.totalCellsHtml(IGV_COLUMNS, rows, {
+			format: (v) => this._fmt_num(v),
+			labelKey: "name",
+			label: __("Total"),
+		});
+		$tfoot.html(`<tr class="cecypo-total-row"><td></td>${cells}</tr>`);
 	}
 
 	_bind_events() {
