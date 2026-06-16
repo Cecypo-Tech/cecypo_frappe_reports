@@ -12,37 +12,14 @@ Custom reports pack for ERPNext, providing enhanced financial and inventory hist
 | Item History | Stock | Purchase and sales history for a specific item |
 | Customer History | Accounts / Sales | Item-wise sales summary per customer with drill-down |
 | Supplier History | Accounts / Purchase | Item-wise purchase summary per supplier with drill-down |
+| Sales Margin Review Enhanced | Accounts / Sales | Per-invoice item-level cost, gross, and margin breakdown |
 
 ### Pages
 
 | Page | URL | Description |
 |------|-----|-------------|
 | Transaction History | /transaction-history | Tabbed view: Item History, Customer History, Supplier History with side-by-side tables and accordion drill-down |
-
-### Installation
-
-```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app cecypo_frappe_reports
-bench --site <site-name> migrate
-```
-
-### Contributing
-
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
-
-```bash
-cd apps/cecypo_frappe_reports
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
+| Item Group Valuation | /item-group-valuation | Drill-down stock valuation by item group — qty, valuation rate, and value with expandable hierarchy |
 
 ### License
 
