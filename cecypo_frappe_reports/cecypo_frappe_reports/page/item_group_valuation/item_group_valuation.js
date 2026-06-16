@@ -132,6 +132,8 @@ class ItemGroupValuationPage {
 					return;
 				}
 				$tbody.empty();
+				$tbody.data("rows", rows);
+				$tbody.data("sort", { key: null, dir: null });
 				this._render_rows(rows, $tbody, 0);
 				this._render_total_row(rows, $tfoot);
 			},
@@ -161,7 +163,9 @@ class ItemGroupValuationPage {
 					<td colspan="5" style="padding:0;border-bottom:1px solid var(--border-color)">
 						<div style="background:var(--card-bg,#fff)">
 							<table style="width:100%;border-collapse:collapse;font-size:13px">
+								<thead>${this._thead_row_html(null)}</thead>
 								<tbody class="igv-sub-tbody" data-for="${esc}" data-indent="${indent + 1}"></tbody>
+								<tfoot class="igv-sub-tfoot"></tfoot>
 							</table>
 						</div>
 					</td>
@@ -224,11 +228,16 @@ class ItemGroupValuationPage {
 				args: { item_group: group, warehouse: warehouse(), company: company() },
 				callback: (r) => {
 					const rows = r.message || [];
+					const $sub_tfoot = $sub.closest("table").children("tfoot.igv-sub-tfoot");
 					$sub.empty();
 					if (!rows.length) {
 						$sub.html(`<tr><td colspan="5" style="padding:8px ${12 + (indent + 1) * 24}px;color:var(--text-muted)">${__("No items found")}</td></tr>`);
+						$sub_tfoot.empty();
 					} else {
+						$sub.data("rows", rows);
+						$sub.data("sort", { key: null, dir: null });
 						this._render_rows(rows, $sub, indent + 1);
+						this._render_total_row(rows, $sub_tfoot);
 					}
 					$sub.data("loaded", true);
 				},
