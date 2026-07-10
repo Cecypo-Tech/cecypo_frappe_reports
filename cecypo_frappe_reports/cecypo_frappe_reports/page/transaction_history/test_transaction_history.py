@@ -1,10 +1,10 @@
 # Copyright (c) 2026, Cecypo and contributors
 # For license information, please see license.txt
 
-import unittest
+from frappe.tests import IntegrationTestCase
 
 
-class TestTransactionHistoryPage(unittest.TestCase):
+class TestTransactionHistoryPage(IntegrationTestCase):
 	def test_get_customer_history_returns_list(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_customer_history,
