@@ -6,6 +6,8 @@ from frappe import _
 from frappe.utils import flt
 from pypika import functions as fn
 
+from cecypo_frappe_reports.cecypo_frappe_reports.utils import get_future_payments_by_invoice
+
 
 @frappe.whitelist()
 def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
@@ -266,7 +268,7 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 
 
 @frappe.whitelist()
-def get_receivables(company, as_of_date, customer=None):
+def get_receivables(company, as_of_date, customer=None, show_future_payments=0):
 	"""AR aging summary — one row per customer with outstanding_amount > 0."""
 	frappe.has_permission("Sales Invoice", "read", throw=True)
 	from collections import defaultdict
@@ -334,29 +336,56 @@ def get_receivables(company, as_of_date, customer=None):
 	# Unallocated advances per customer
 	adv_q = (
 		frappe.qb.from_(pe)
-		.select(pe.party.as_("customer"), fn.Sum(pe.unallocated_amount).as_("unallocated_advance"))
+		.left_join(cust_doc).on(pe.party == cust_doc.name)
+		.select(
+			pe.party.as_("customer"),
+			cust_doc.customer_group,
+			fn.Sum(pe.unallocated_amount).as_("unallocated_advance"),
+		)
 		.where(pe.docstatus == 1)
 		.where(pe.payment_type == "Receive")
 		.where(pe.party_type == "Customer")
 		.where(pe.company == company)
 		.where(pe.unallocated_amount > 0)
+		.where(pe.posting_date <= as_of)
 		.groupby(pe.party)
 	)
 	if customer:
 		adv_q = adv_q.where(pe.party == customer)
-	unallocated = {r.customer: flt(r.unallocated_advance, 2) for r in adv_q.run(as_dict=True)}
+	adv_rows = adv_q.run(as_dict=True)
+	unallocated = {r.customer: flt(r.unallocated_advance, 2) for r in adv_rows}
+
+	# Advance-only customers have no outstanding invoice, so the invoice loop above never
+	# added them to `agg`. Seed a zero-valued entry here; the final loop below attaches
+	# last_payment / unallocated_advance / future_payments to every key in `agg`, so these
+	# rows get the same treatment as invoice-sourced rows for free.
+	for r in adv_rows:
+		if r.customer not in agg:
+			a = agg[r.customer]
+			a["customer"] = r.customer
+			a["customer_group"] = r.customer_group or ""
+
+	# Future payments per customer — see cecypo_frappe_reports.utils.get_future_payments_by_invoice
+	# for the shared definition (also used by the GL statement print format). Opt-in: skipped
+	# entirely unless requested, since it adds two more queries on top of the three this report
+	# already runs.
+	future_payments = defaultdict(float)
+	if int(show_future_payments):
+		for r in get_future_payments_by_invoice(party=customer, as_of_date=as_of, company=company):
+			future_payments[r["customer"]] += r["future_amount"]
 
 	result = []
 	for cust_name, data in agg.items():
 		data["last_payment"] = last_payments.get(cust_name)
 		data["unallocated_advance"] = unallocated.get(cust_name, 0.0)
+		data["future_payments"] = flt(future_payments.get(cust_name, 0.0), 2)
 		result.append(data)
 	result.sort(key=lambda x: x["outstanding"], reverse=True)
 	return result
 
 
 @frappe.whitelist()
-def get_receivables_detail(customer, company, as_of_date):
+def get_receivables_detail(customer, company, as_of_date, show_future_payments=0):
 	"""Individual outstanding SI rows for accordion drill-down."""
 	frappe.has_permission("Sales Invoice", "read", throw=True)
 	from frappe.utils import getdate
@@ -375,14 +404,23 @@ def get_receivables_detail(customer, company, as_of_date):
 			si.status,
 		)
 		.where(si.docstatus == 1)
-		.where(si.outstanding_amount > 0)
 		.where(si.customer == customer)
 		.where(si.company == company)
 		.where(si.posting_date <= as_of)
+		.where(si.outstanding_amount > 0)
 		.orderby(si.due_date)
 		.run(as_dict=True)
 	)
+
+	future_payments = {}
+	if int(show_future_payments):
+		future_payments = {
+			r["invoice_no"]: r["future_amount"]
+			for r in get_future_payments_by_invoice(party=customer, as_of_date=as_of, company=company)
+		}
+
 	for r in rows:
+		r["future_amount"] = flt(future_payments.get(r["voucher_no"], 0.0), 2)
 		due = getdate(r.due_date) if r.due_date else getdate(r.date)
 		r["days_overdue"] = max(0, (as_of - due).days)
 		r["grand_total"] = flt(r["grand_total"], 2)
