@@ -219,6 +219,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-pay-company" style="min-width:180px"></div>
 						<div class="ctrl-pay-as-of" style="min-width:140px"></div>
 						<div class="ctrl-pay-supplier" style="min-width:220px"></div>
+						<div class="ctrl-pay-show-future" style="min-width:160px"></div>
 						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-get-payables">${__("Get")}</button></div>
 					</div>
 					<div class="th-content payables-content"></div>
@@ -349,6 +350,9 @@ class TransactionHistoryPage {
 		});
 		this.controls.pay_supplier = make(".ctrl-pay-supplier", {
 			fieldtype: "Link", options: "Supplier", fieldname: "supplier", label: __("Supplier"),
+		});
+		this.controls.pay_show_future = make(".ctrl-pay-show-future", {
+			fieldtype: "Check", fieldname: "show_future_payments", label: __("Show Future Payments"),
 		});
 		if (default_company) this.controls.pay_company.set_value(default_company);
 		this.controls.pay_as_of.set_value(today);
@@ -1150,11 +1154,13 @@ class TransactionHistoryPage {
 			const $dc = $detail.find(`.pay-detail-content[data-for="${party}"]`);
 			if ($dc.data("loaded")) return;
 
+			const show_future = this._pay_state.show_future_payments ?? 0;
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail",
-				args: { supplier: party, company, as_of_date },
+				args: { supplier: party, company, as_of_date, show_future_payments: show_future },
 				callback: (r) => {
-					$dc.html(this._render_outstanding_detail(r.message || [], false)).data("loaded", true).data("rows", r.message || []);
+					$dc.html(this._render_outstanding_detail(r.message || [], false, show_future))
+						.data("loaded", true).data("rows", r.message || []);
 				},
 			});
 		});
@@ -1745,7 +1751,7 @@ class TransactionHistoryPage {
 			return `<span class="text-muted">${__("No outstanding invoices found")}</span>`;
 		const bc = this.base_currency;
 		const slug = is_customer ? "sales-invoice" : "purchase-invoice";
-		const show_future_col = is_customer && !!show_future;
+		const show_future_col = !!show_future;
 		return `
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
@@ -2103,16 +2109,18 @@ class TransactionHistoryPage {
 		const as_of_date = this.controls.pay_as_of.get_value();
 		if (!company || !as_of_date) { frappe.msgprint(__("Company and As Of Date are required")); return; }
 		const supplier = this.controls.pay_supplier.get_value() || null;
+		const show_future_payments = this.controls.pay_show_future.get_value() ? 1 : 0;
 		const $content = $(m).find(".payables-content");
 		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables",
-			args: { company, as_of_date, supplier },
+			args: { company, as_of_date, supplier, show_future_payments },
 			callback: (r) => {
 				if (r.message != null) {
 					this._pay_state.rows = r.message;
 					this._pay_state.company = company;
 					this._pay_state.as_of_date = as_of_date;
+					this._pay_state.show_future_payments = show_future_payments;
 					this._render_payables(r.message, company, as_of_date, supplier);
 				}
 			},
@@ -2124,6 +2132,7 @@ class TransactionHistoryPage {
 		const $content = $(m).find(".payables-content");
 		const bc = this.base_currency;
 		const accent = "var(--green)";
+		const show_future = !!this._pay_state.show_future_payments;
 
 		if (!rows.length) {
 			$content.html(`<div class="text-muted" style="padding:20px">${__("No outstanding payables found")}</div>`);
@@ -2163,10 +2172,10 @@ class TransactionHistoryPage {
 			`);
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail",
-				args: { supplier, company, as_of_date },
+				args: { supplier, company, as_of_date, show_future_payments: show_future ? 1 : 0 },
 				callback: (r2) => {
 					$content.find(`.pay-detail-content[data-for="${supplier}"]`)
-						.html(this._render_outstanding_detail(r2.message || [], false))
+						.html(this._render_outstanding_detail(r2.message || [], false, show_future))
 						.data("rows", r2.message || []);
 				},
 			});
@@ -2202,6 +2211,7 @@ class TransactionHistoryPage {
 						${th(__("61–90"), "bucket_61_90", "right")}
 						${th(__("90+"), "bucket_90_plus", "right")}
 						${th(__("Last Payment"), "last_payment")}
+						${show_future ? th(__("Future Payments"), "future_payments", "right") : ""}
 						<th style="padding:5px 8px;border-bottom:2px solid ${accent}"></th>
 					</tr>
 				</thead>
@@ -2228,6 +2238,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r.bucket_61_90 > 0 ? format_currency(r.bucket_61_90, bc) : "—"}</td>
 							<td style="padding:4px 8px;text-align:right;${r.bucket_90_plus > 0 ? "color:var(--red);font-weight:700;" : ""}border-bottom:1px solid var(--border-color)">${r.bucket_90_plus > 0 ? format_currency(r.bucket_90_plus, bc) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</td>
+							${show_future ? `<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r.future_payments > 0 ? format_currency(r.future_payments, bc) : "—"}</td>` : ""}
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
