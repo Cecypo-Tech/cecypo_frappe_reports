@@ -497,17 +497,34 @@ def get_payables(company, as_of_date, supplier=None):
 	# Unallocated advances per supplier
 	adv_q = (
 		frappe.qb.from_(pe)
-		.select(pe.party.as_("supplier"), fn.Sum(pe.unallocated_amount).as_("unallocated_advance"))
+		.left_join(supp_doc).on(pe.party == supp_doc.name)
+		.select(
+			pe.party.as_("supplier"),
+			supp_doc.supplier_group,
+			fn.Sum(pe.unallocated_amount).as_("unallocated_advance"),
+		)
 		.where(pe.docstatus == 1)
 		.where(pe.payment_type == "Pay")
 		.where(pe.party_type == "Supplier")
 		.where(pe.company == company)
 		.where(pe.unallocated_amount > 0)
+		.where(pe.posting_date <= as_of)
 		.groupby(pe.party)
 	)
 	if supplier:
 		adv_q = adv_q.where(pe.party == supplier)
-	unallocated = {r.supplier: flt(r.unallocated_advance, 2) for r in adv_q.run(as_dict=True)}
+	adv_rows = adv_q.run(as_dict=True)
+	unallocated = {r.supplier: flt(r.unallocated_advance, 2) for r in adv_rows}
+
+	# Advance-only suppliers have no outstanding invoice, so the invoice loop above never
+	# added them to `agg`. Seed a zero-valued entry here; the final loop below attaches
+	# last_payment / unallocated_advance to every key in `agg`, so these rows get the same
+	# treatment as invoice-sourced rows for free.
+	for r in adv_rows:
+		if r.supplier not in agg:
+			a = agg[r.supplier]
+			a["supplier"] = r.supplier
+			a["supplier_group"] = r.supplier_group or ""
 
 	result = []
 	for supp_name, data in agg.items():

@@ -152,3 +152,53 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15")
 		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
 		self.assertIsNone(row)
+
+	def test_get_payables_includes_advance_only_supplier(self):
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_payables,
+		)
+
+		pe = create_payment_entry(
+			payment_type="Pay",
+			party_type="Supplier",
+			party="_Test Supplier",
+			paid_from="_Test Bank - _TC",
+			paid_to="Creditors - _TC",
+			paid_amount=500,
+			save=True,
+		)
+		pe.posting_date = "2025-06-15"
+		pe.save()
+		pe.submit()
+
+		rows = get_payables(company="_Test Company", as_of_date="2025-06-15")
+		row = next((r for r in rows if r["supplier"] == "_Test Supplier"), None)
+		self.assertIsNotNone(row)
+		self.assertEqual(row["outstanding"], 0.0)
+		self.assertGreaterEqual(row["unallocated_advance"], 500.0)
+
+	def test_get_payables_excludes_future_dated_advance(self):
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_payables,
+		)
+
+		pe = create_payment_entry(
+			payment_type="Pay",
+			party_type="Supplier",
+			party="_Test Supplier",
+			paid_from="_Test Bank - _TC",
+			paid_to="Creditors - _TC",
+			paid_amount=500,
+			save=True,
+		)
+		pe.posting_date = "2025-06-25"
+		pe.save()
+		pe.submit()
+
+		rows = get_payables(company="_Test Company", as_of_date="2025-06-15")
+		row = next((r for r in rows if r["supplier"] == "_Test Supplier"), None)
+		self.assertIsNone(row)
