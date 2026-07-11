@@ -77,10 +77,9 @@ app_include_js = [
 # ----------
 
 # add methods and filters to jinja environment
-# jinja = {
-# 	"methods": "cecypo_frappe_reports.utils.jinja_methods",
-# 	"filters": "cecypo_frappe_reports.utils.jinja_filters"
-# }
+jinja = {
+	"methods": ["cecypo_frappe_reports.cecypo_frappe_reports.utils.get_future_payments_by_invoice"],
+}
 
 # Installation
 # ------------
