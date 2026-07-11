@@ -3,6 +3,7 @@
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import flt
 
 
 class TestTransactionHistoryPage(IntegrationTestCase):
@@ -123,6 +124,75 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		)
 		self.assertIsInstance(rows, list)
 
+	def test_get_receivables_nets_return_invoice_against_total(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_receivables,
+		)
+
+		si = create_sales_invoice(customer="_Test Customer", posting_date="2025-06-15", qty=1, rate=1000)
+		create_sales_invoice(
+			customer="_Test Customer",
+			posting_date="2025-06-16",
+			qty=-1,
+			rate=1000,
+			is_return=1,
+			return_against=si.name,
+		)
+
+		rows = get_receivables(company="_Test Company", as_of_date="2025-06-16", customer="_Test Customer")
+		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
+		self.assertIsNone(row)  # fully returned invoice must not appear as outstanding
+
+	def test_get_receivables_future_allocated_payment_stays_out_of_outstanding(self):
+		"""An allocated future payment reveals itself only via future_payments (matching the
+		standard Accounts Receivable report exactly) — it never reduces outstanding, since the
+		invoice legally remains outstanding until that future date arrives. Only *unallocated*
+		future advances (see test_get_receivables_includes_future_dated_advance) net into
+		outstanding when the toggle is on."""
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_receivables,
+		)
+
+		si = create_sales_invoice(customer="_Test Customer", posting_date="2025-06-15", qty=1, rate=1000)
+
+		pe = create_payment_entry(
+			payment_type="Receive",
+			party_type="Customer",
+			party="_Test Customer",
+			paid_from="Debtors - _TC",
+			paid_to="_Test Cash - _TC",
+			paid_amount=1000,
+			save=True,
+		)
+		pe.posting_date = "2025-06-25"  # after as_of_date below
+		pe.set_posting_time = 1
+		pe.append("references", {
+			"reference_doctype": "Sales Invoice",
+			"reference_name": si.name,
+			"allocated_amount": 1000,
+		})
+		pe.save()
+		pe.submit()
+
+		# Without the toggle: outstanding stays at the pre-payment amount, no future_payments.
+		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15", customer="_Test Customer")
+		row = next(r for r in rows if r["customer"] == "_Test Customer")
+		self.assertEqual(row["outstanding"], si.grand_total)
+		self.assertEqual(row["future_payments"], 0.0)
+
+		# With the toggle: outstanding is unchanged, but future_payments reveals the allocation.
+		rows_future = get_receivables(
+			company="_Test Company", as_of_date="2025-06-15", customer="_Test Customer", show_future_payments=1
+		)
+		row_future = next(r for r in rows_future if r["customer"] == "_Test Customer")
+		self.assertEqual(row_future["outstanding"], si.grand_total)
+		self.assertEqual(row_future["future_payments"], 1000.0)
+
 	def test_get_receivables_includes_advance_only_customer(self):
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
 
@@ -146,11 +216,24 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15")
 		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
 		self.assertIsNotNone(row)
-		self.assertEqual(row["outstanding"], 0.0)
+		self.assertEqual(row["outstanding"], -750.0)  # net credit balance, no invoices
 		self.assertGreaterEqual(row["unallocated_advance"], 750.0)
 
-	def test_get_receivables_excludes_future_dated_advance(self):
+	def test_get_receivables_includes_future_dated_advance(self):
+		"""A future-dated unallocated advance is invisible by default (matching the standard
+		Accounts Receivable report) and only surfaces — netted into outstanding — once
+		show_future_payments is on.
+
+		ERPNext only relaxes its date cutoff for an *unallocated* payment when that payment's
+		own ledger entry `creation` timestamp is on/before the report date (see
+		ReceivablePayableReport.prepare_ple_query) — i.e. "recorded today, dated for a future
+		clearing date", exactly like a real post-dated cheque. Backdate the Payment Ledger
+		Entry's creation directly so a fixed as_of_date can be used like the rest of this suite,
+		without tripping the 2026 Fiscal Year's company restriction (see test docs elsewhere in
+		this file / the advance-only-party investigation for that landmine).
+		"""
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from frappe.utils import getdate
 
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_receivables,
@@ -168,10 +251,20 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		pe.posting_date = "2025-06-25"
 		pe.save()
 		pe.submit()
+		frappe.db.set_value(
+			"Payment Ledger Entry", {"voucher_no": pe.name}, "creation", "2025-06-15", update_modified=False
+		)
 
 		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15")
 		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
 		self.assertIsNone(row)
+
+		rows_future = get_receivables(company="_Test Company", as_of_date="2025-06-15", show_future_payments=1)
+		row_future = next((r for r in rows_future if r["customer"] == "_Test Customer"), None)
+		self.assertIsNotNone(row_future)
+		self.assertEqual(row_future["outstanding"], -750.0)
+		self.assertGreaterEqual(row_future["unallocated_advance"], 750.0)
+		self.assertEqual(getdate(row_future["last_payment"]), getdate("2025-06-25"))
 
 	def test_get_payables_includes_advance_only_supplier(self):
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
@@ -196,11 +289,16 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		rows = get_payables(company="_Test Company", as_of_date="2025-06-15")
 		row = next((r for r in rows if r["supplier"] == "_Test Supplier"), None)
 		self.assertIsNotNone(row)
-		self.assertEqual(row["outstanding"], 0.0)
+		self.assertEqual(row["outstanding"], -500.0)  # net credit balance, no invoices
 		self.assertGreaterEqual(row["unallocated_advance"], 500.0)
 
-	def test_get_payables_excludes_future_dated_advance(self):
+	def test_get_payables_includes_future_dated_advance(self):
+		"""A future-dated unallocated advance is invisible by default (matching the standard
+		Accounts Payable report) and only surfaces — netted into outstanding — once
+		show_future_payments is on. See test_get_receivables_includes_future_dated_advance for
+		why the Payment Ledger Entry's creation is backdated directly."""
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from frappe.utils import getdate
 
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_payables,
@@ -218,10 +316,20 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		pe.posting_date = "2025-06-25"
 		pe.save()
 		pe.submit()
+		frappe.db.set_value(
+			"Payment Ledger Entry", {"voucher_no": pe.name}, "creation", "2025-06-15", update_modified=False
+		)
 
 		rows = get_payables(company="_Test Company", as_of_date="2025-06-15")
 		row = next((r for r in rows if r["supplier"] == "_Test Supplier"), None)
 		self.assertIsNone(row)
+
+		rows_future = get_payables(company="_Test Company", as_of_date="2025-06-15", show_future_payments=1)
+		row_future = next((r for r in rows_future if r["supplier"] == "_Test Supplier"), None)
+		self.assertIsNotNone(row_future)
+		self.assertEqual(row_future["outstanding"], -500.0)
+		self.assertGreaterEqual(row_future["unallocated_advance"], 500.0)
+		self.assertEqual(getdate(row_future["last_payment"]), getdate("2025-06-25"))
 
 	def test_get_receivables_invoice_and_advance_not_double_counted(self):
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
@@ -248,7 +356,9 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 
 		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15", customer="_Test Customer")
 		self.assertEqual(len(rows), 1)
-		self.assertEqual(rows[0]["outstanding"], si.outstanding_amount)
+		# Net balance: the unpaid invoice minus the unallocated advance sitting on the account —
+		# not si.outstanding_amount alone, which would ignore the 300 advance entirely.
+		self.assertEqual(rows[0]["outstanding"], flt(si.grand_total - 300, 2))
 		self.assertEqual(rows[0]["unallocated_advance"], 300.0)
 
 	def test_get_payables_fully_allocated_advance_produces_no_row(self):

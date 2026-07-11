@@ -3,10 +3,8 @@
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt, getdate
 from pypika import functions as fn
-
-from cecypo_frappe_reports.cecypo_frappe_reports.utils import get_future_payments_by_invoice
 
 
 @frappe.whitelist()
@@ -269,306 +267,64 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 
 @frappe.whitelist()
 def get_receivables(company, as_of_date, customer=None, show_future_payments=0):
-	"""AR aging summary — one row per customer with outstanding_amount > 0."""
+	"""AR aging summary — one row per customer with a non-zero net balance.
+
+	Sourced from ERPNext's own Accounts Receivable report engine (Payment Ledger Entry based)
+	instead of a bespoke Sales Invoice/Payment Entry query, so totals always match the standard
+	AR report and the PSOA AR Statement print format: credit notes/returns net into the total,
+	and "outstanding" stays as-of-date consistent (a future-dated payment only nets in when
+	show_future_payments is on, matching how the standard report treats it).
+	"""
 	frappe.has_permission("Sales Invoice", "read", throw=True)
-	from collections import defaultdict
-	from frappe.utils import getdate
-
-	as_of = getdate(as_of_date)
-	si = frappe.qb.DocType("Sales Invoice")
-	cust_doc = frappe.qb.DocType("Customer")
-
-	query = (
-		frappe.qb.from_(si)
-		.left_join(cust_doc).on(si.customer == cust_doc.name)
-		.select(
-			si.customer,
-			cust_doc.customer_group,
-			si.name,
-			si.grand_total,
-			si.outstanding_amount,
-			si.due_date,
-			si.posting_date,
-		)
-		.where(si.docstatus == 1)
-		.where(si.outstanding_amount > 0)
-		.where(si.company == company)
-		.where(si.posting_date <= as_of)
+	return _get_party_balances(
+		party_type="Customer",
+		company=company,
+		as_of_date=as_of_date,
+		party=customer,
+		show_future_payments=show_future_payments,
 	)
-	if customer:
-		query = query.where(si.customer == customer)
-	rows = query.run(as_dict=True)
-
-	# Last payment date per customer
-	pe = frappe.qb.DocType("Payment Entry")
-	pay_q = (
-		frappe.qb.from_(pe)
-		.select(pe.party.as_("customer"), fn.Max(pe.posting_date).as_("last_payment"))
-		.where(pe.docstatus == 1)
-		.where(pe.payment_type == "Receive")
-		.where(pe.party_type == "Customer")
-		.where(pe.company == company)
-		.where(pe.posting_date <= as_of)
-		.groupby(pe.party)
-	)
-	if customer:
-		pay_q = pay_q.where(pe.party == customer)
-	last_payments = {r.customer: r.last_payment for r in pay_q.run(as_dict=True)}
-
-	agg = defaultdict(lambda: {
-		"customer": "", "customer_group": "",
-		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
-		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
-	})
-	for r in rows:
-		a = agg[r.customer]
-		a["customer"] = r.customer
-		a["customer_group"] = r.customer_group or ""
-		gt = flt(r.grand_total, 2)
-		oa = flt(r.outstanding_amount, 2)
-		a["total_invoiced"] = flt(a["total_invoiced"] + gt, 2)
-		a["total_paid"] = flt(a["total_paid"] + (gt - oa), 2)
-		a["outstanding"] = flt(a["outstanding"] + oa, 2)
-		due = getdate(r.due_date) if r.due_date else getdate(r.posting_date)
-		bucket = _calculate_aging_bucket(due, as_of)
-		a[bucket] = flt(a[bucket] + oa, 2)
-
-	# Unallocated advances per customer
-	adv_q = (
-		frappe.qb.from_(pe)
-		.left_join(cust_doc).on(pe.party == cust_doc.name)
-		.select(
-			pe.party.as_("customer"),
-			cust_doc.customer_group,
-			fn.Sum(pe.unallocated_amount).as_("unallocated_advance"),
-		)
-		.where(pe.docstatus == 1)
-		.where(pe.payment_type == "Receive")
-		.where(pe.party_type == "Customer")
-		.where(pe.company == company)
-		.where(pe.unallocated_amount > 0)
-		.where(pe.posting_date <= as_of)
-		.groupby(pe.party)
-	)
-	if customer:
-		adv_q = adv_q.where(pe.party == customer)
-	adv_rows = adv_q.run(as_dict=True)
-	unallocated = {r.customer: flt(r.unallocated_advance, 2) for r in adv_rows}
-
-	# Advance-only customers have no outstanding invoice, so the invoice loop above never
-	# added them to `agg`. Seed a zero-valued entry here; the final loop below attaches
-	# last_payment / unallocated_advance / future_payments to every key in `agg`, so these
-	# rows get the same treatment as invoice-sourced rows for free.
-	for r in adv_rows:
-		if r.customer not in agg:
-			a = agg[r.customer]
-			a["customer"] = r.customer
-			a["customer_group"] = r.customer_group or ""
-
-	# Future payments per customer — see cecypo_frappe_reports.utils.get_future_payments_by_invoice
-	# for the shared definition (also used by the GL statement print format). Opt-in: skipped
-	# entirely unless requested, since it adds two more queries on top of the three this report
-	# already runs.
-	future_payments = defaultdict(float)
-	if int(show_future_payments):
-		for r in get_future_payments_by_invoice(party=customer, as_of_date=as_of, company=company):
-			future_payments[r["customer"]] += r["future_amount"]
-
-	result = []
-	for cust_name, data in agg.items():
-		data["last_payment"] = last_payments.get(cust_name)
-		data["unallocated_advance"] = unallocated.get(cust_name, 0.0)
-		data["future_payments"] = flt(future_payments.get(cust_name, 0.0), 2)
-		result.append(data)
-	result.sort(key=lambda x: x["outstanding"], reverse=True)
-	return result
 
 
 @frappe.whitelist()
 def get_receivables_detail(customer, company, as_of_date, show_future_payments=0):
 	"""Individual outstanding SI rows for accordion drill-down."""
 	frappe.has_permission("Sales Invoice", "read", throw=True)
-	from frappe.utils import getdate
-
-	as_of = getdate(as_of_date)
-	si = frappe.qb.DocType("Sales Invoice")
-	rows = (
-		frappe.qb.from_(si)
-		.select(
-			si.posting_date.as_("date"),
-			si.name.as_("voucher_no"),
-			si.grand_total,
-			(si.grand_total - si.outstanding_amount).as_("paid"),
-			si.outstanding_amount,
-			si.due_date,
-			si.status,
-		)
-		.where(si.docstatus == 1)
-		.where(si.customer == customer)
-		.where(si.company == company)
-		.where(si.posting_date <= as_of)
-		.where(si.outstanding_amount > 0)
-		.orderby(si.due_date)
-		.run(as_dict=True)
+	return _get_party_balance_detail(
+		party_type="Customer",
+		company=company,
+		as_of_date=as_of_date,
+		party=customer,
+		show_future_payments=show_future_payments,
 	)
-
-	future_payments = {}
-	if int(show_future_payments):
-		future_payments = {
-			r["invoice_no"]: r["future_amount"]
-			for r in get_future_payments_by_invoice(party=customer, as_of_date=as_of, company=company)
-		}
-
-	for r in rows:
-		r["future_amount"] = flt(future_payments.get(r["voucher_no"], 0.0), 2)
-		due = getdate(r.due_date) if r.due_date else getdate(r.date)
-		r["days_overdue"] = max(0, (as_of - due).days)
-		r["grand_total"] = flt(r["grand_total"], 2)
-		r["paid"] = flt(r["paid"], 2)
-		r["outstanding_amount"] = flt(r["outstanding_amount"], 2)
-	return rows
 
 
 @frappe.whitelist()
-def get_payables(company, as_of_date, supplier=None):
-	"""AP aging summary — one row per supplier with outstanding_amount > 0."""
+def get_payables(company, as_of_date, supplier=None, show_future_payments=0):
+	"""AP aging summary — one row per supplier with a non-zero net balance.
+
+	Sourced from ERPNext's own Accounts Payable report engine — see get_receivables for why.
+	"""
 	frappe.has_permission("Purchase Invoice", "read", throw=True)
-	from collections import defaultdict
-	from frappe.utils import getdate
-
-	as_of = getdate(as_of_date)
-	pi = frappe.qb.DocType("Purchase Invoice")
-	supp_doc = frappe.qb.DocType("Supplier")
-
-	query = (
-		frappe.qb.from_(pi)
-		.left_join(supp_doc).on(pi.supplier == supp_doc.name)
-		.select(
-			pi.supplier,
-			supp_doc.supplier_group,
-			pi.name,
-			pi.grand_total,
-			pi.outstanding_amount,
-			pi.due_date,
-			pi.posting_date,
-		)
-		.where(pi.docstatus == 1)
-		.where(pi.outstanding_amount > 0)
-		.where(pi.company == company)
-		.where(pi.posting_date <= as_of)
+	return _get_party_balances(
+		party_type="Supplier",
+		company=company,
+		as_of_date=as_of_date,
+		party=supplier,
+		show_future_payments=show_future_payments,
 	)
-	if supplier:
-		query = query.where(pi.supplier == supplier)
-	rows = query.run(as_dict=True)
-
-	pe = frappe.qb.DocType("Payment Entry")
-	pay_q = (
-		frappe.qb.from_(pe)
-		.select(pe.party.as_("supplier"), fn.Max(pe.posting_date).as_("last_payment"))
-		.where(pe.docstatus == 1)
-		.where(pe.payment_type == "Pay")
-		.where(pe.party_type == "Supplier")
-		.where(pe.company == company)
-		.where(pe.posting_date <= as_of)
-		.groupby(pe.party)
-	)
-	if supplier:
-		pay_q = pay_q.where(pe.party == supplier)
-	last_payments = {r.supplier: r.last_payment for r in pay_q.run(as_dict=True)}
-
-	agg = defaultdict(lambda: {
-		"supplier": "", "supplier_group": "",
-		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
-		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
-	})
-	for r in rows:
-		a = agg[r.supplier]
-		a["supplier"] = r.supplier
-		a["supplier_group"] = r.supplier_group or ""
-		gt = flt(r.grand_total, 2)
-		oa = flt(r.outstanding_amount, 2)
-		a["total_invoiced"] = flt(a["total_invoiced"] + gt, 2)
-		a["total_paid"] = flt(a["total_paid"] + (gt - oa), 2)
-		a["outstanding"] = flt(a["outstanding"] + oa, 2)
-		due = getdate(r.due_date) if r.due_date else getdate(r.posting_date)
-		bucket = _calculate_aging_bucket(due, as_of)
-		a[bucket] = flt(a[bucket] + oa, 2)
-
-	# Unallocated advances per supplier
-	adv_q = (
-		frappe.qb.from_(pe)
-		.left_join(supp_doc).on(pe.party == supp_doc.name)
-		.select(
-			pe.party.as_("supplier"),
-			supp_doc.supplier_group,
-			fn.Sum(pe.unallocated_amount).as_("unallocated_advance"),
-		)
-		.where(pe.docstatus == 1)
-		.where(pe.payment_type == "Pay")
-		.where(pe.party_type == "Supplier")
-		.where(pe.company == company)
-		.where(pe.unallocated_amount > 0)
-		.where(pe.posting_date <= as_of)
-		.groupby(pe.party)
-	)
-	if supplier:
-		adv_q = adv_q.where(pe.party == supplier)
-	adv_rows = adv_q.run(as_dict=True)
-	unallocated = {r.supplier: flt(r.unallocated_advance, 2) for r in adv_rows}
-
-	# Advance-only suppliers have no outstanding invoice, so the invoice loop above never
-	# added them to `agg`. Seed a zero-valued entry here; the final loop below attaches
-	# last_payment / unallocated_advance to every key in `agg`, so these rows get the same
-	# treatment as invoice-sourced rows for free.
-	for r in adv_rows:
-		if r.supplier not in agg:
-			a = agg[r.supplier]
-			a["supplier"] = r.supplier
-			a["supplier_group"] = r.supplier_group or ""
-
-	result = []
-	for supp_name, data in agg.items():
-		data["last_payment"] = last_payments.get(supp_name)
-		data["unallocated_advance"] = unallocated.get(supp_name, 0.0)
-		result.append(data)
-	result.sort(key=lambda x: x["outstanding"], reverse=True)
-	return result
 
 
 @frappe.whitelist()
-def get_payables_detail(supplier, company, as_of_date):
+def get_payables_detail(supplier, company, as_of_date, show_future_payments=0):
 	"""Individual outstanding PI rows for accordion drill-down."""
 	frappe.has_permission("Purchase Invoice", "read", throw=True)
-	from frappe.utils import getdate
-
-	as_of = getdate(as_of_date)
-	pi = frappe.qb.DocType("Purchase Invoice")
-	rows = (
-		frappe.qb.from_(pi)
-		.select(
-			pi.posting_date.as_("date"),
-			pi.name.as_("voucher_no"),
-			pi.grand_total,
-			(pi.grand_total - pi.outstanding_amount).as_("paid"),
-			pi.outstanding_amount,
-			pi.due_date,
-			pi.status,
-		)
-		.where(pi.docstatus == 1)
-		.where(pi.outstanding_amount > 0)
-		.where(pi.supplier == supplier)
-		.where(pi.company == company)
-		.where(pi.posting_date <= as_of)
-		.orderby(pi.due_date)
-		.run(as_dict=True)
+	return _get_party_balance_detail(
+		party_type="Supplier",
+		company=company,
+		as_of_date=as_of_date,
+		party=supplier,
+		show_future_payments=show_future_payments,
 	)
-	for r in rows:
-		due = getdate(r.due_date) if r.due_date else getdate(r.date)
-		r["days_overdue"] = max(0, (as_of - due).days)
-		r["grand_total"] = flt(r["grand_total"], 2)
-		r["paid"] = flt(r["paid"], 2)
-		r["outstanding_amount"] = flt(r["outstanding_amount"], 2)
-	return rows
 
 
 @frappe.whitelist()
@@ -903,19 +659,125 @@ def _get_supplier_last_rate_map(supplier, company, item_codes, source="pi", from
 	return result
 
 
-def _calculate_aging_bucket(due_date, as_of_date):
-	"""Return the aging bucket key for an invoice due on due_date as of as_of_date.
+def _get_report_execute(party_type):
+	"""Return ERPNext's Accounts Receivable/Payable report `execute` function for party_type."""
+	if party_type == "Customer":
+		from erpnext.accounts.report.accounts_receivable.accounts_receivable import execute as ar_execute
 
-	Not-yet-due invoices (days < 0) fall into bucket_0_30 — the UI labels this "Current (0–30)".
+		return ar_execute
+	from erpnext.accounts.report.accounts_payable.accounts_payable import execute as ap_execute
+
+	return ap_execute
+
+
+def _get_party_balances(party_type, company, as_of_date, party=None, show_future_payments=0):
+	"""Group ERPNext's Accounts Receivable/Payable report rows into one entry per party.
+
+	Delegating to erpnext's own report engine (Payment Ledger Entry based) instead of a bespoke
+	Sales/Purchase Invoice query means credit notes/returns net into the total automatically, and
+	"outstanding" stays as-of-date consistent: a future-dated payment only nets in when
+	show_future_payments is on, exactly like the standard report and the PSOA statement print
+	formats.
 	"""
-	days = (as_of_date - due_date).days
-	if days <= 30:
-		return "bucket_0_30"
-	elif days <= 60:
-		return "bucket_31_60"
-	elif days <= 90:
-		return "bucket_61_90"
-	return "bucket_90_plus"
+	from collections import defaultdict
+
+	party_field = "customer" if party_type == "Customer" else "supplier"
+	group_field = "customer_group" if party_type == "Customer" else "supplier_group"
+
+	filters = {
+		"company": company,
+		"report_date": as_of_date,
+		"party_type": party_type,
+		"show_future_payments": cint(show_future_payments),
+	}
+	if party:
+		filters["party"] = [party]
+
+	_columns, data, *_rest = _get_report_execute(party_type)(filters)
+
+	agg = defaultdict(lambda: {
+		party_field: "", group_field: "",
+		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
+		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
+		"last_payment": None, "unallocated_advance": 0.0, "future_payments": 0.0,
+	})
+	for r in data or []:
+		name = r.get("party")
+		if not name:
+			continue
+		a = agg[name]
+		a[party_field] = name
+		a[group_field] = r.get(group_field) or ""
+		a["total_invoiced"] = flt(a["total_invoiced"] + flt(r.get("invoiced") or 0), 2)
+		a["total_paid"] = flt(a["total_paid"] + flt(r.get("paid") or 0), 2)
+		a["outstanding"] = flt(a["outstanding"] + flt(r.get("outstanding") or 0), 2)
+		a["bucket_0_30"] = flt(a["bucket_0_30"] + flt(r.get("range0") or 0) + flt(r.get("range1") or 0), 2)
+		a["bucket_31_60"] = flt(a["bucket_31_60"] + flt(r.get("range2") or 0), 2)
+		a["bucket_61_90"] = flt(a["bucket_61_90"] + flt(r.get("range3") or 0), 2)
+		a["bucket_90_plus"] = flt(a["bucket_90_plus"] + flt(r.get("range4") or 0) + flt(r.get("range5") or 0), 2)
+		a["future_payments"] = flt(a["future_payments"] + flt(r.get("future_amount") or 0), 2)
+
+		if r.get("voucher_type") in ("Payment Entry", "Journal Entry"):
+			posting_date = getdate(r["posting_date"])
+			if not a["last_payment"] or posting_date > getdate(a["last_payment"]):
+				a["last_payment"] = posting_date
+			outstanding = flt(r.get("outstanding") or 0)
+			if outstanding < 0:
+				a["unallocated_advance"] = flt(a["unallocated_advance"] + -outstanding, 2)
+
+	result = [a for a in agg.values() if a["outstanding"] or a["unallocated_advance"]]
+	result.sort(key=lambda x: x["outstanding"], reverse=True)
+	return result
+
+
+def _get_party_balance_detail(party_type, company, as_of_date, party, show_future_payments=0):
+	"""Per-invoice outstanding rows for a single party's accordion drill-down.
+
+	Sourced from the same AR/AP report rows as _get_party_balances (see there for why),
+	filtered down to invoice vouchers only.
+	"""
+	voucher_doctype = "Sales Invoice" if party_type == "Customer" else "Purchase Invoice"
+
+	as_of = getdate(as_of_date)
+	filters = {
+		"company": company,
+		"report_date": as_of,
+		"party_type": party_type,
+		"party": [party],
+		"show_future_payments": cint(show_future_payments),
+	}
+	_columns, data, *_rest = _get_report_execute(party_type)(filters)
+
+	invoice_rows = [
+		r for r in (data or [])
+		if r.get("voucher_type") == voucher_doctype and flt(r.get("outstanding") or 0) > 0
+	]
+	voucher_nos = [r["voucher_no"] for r in invoice_rows]
+	statuses = {}
+	if voucher_nos:
+		statuses = {
+			d.name: d.status
+			for d in frappe.db.get_all(
+				voucher_doctype, filters={"name": ["in", voucher_nos]}, fields=["name", "status"]
+			)
+		}
+
+	rows = []
+	for r in invoice_rows:
+		due = getdate(r["due_date"]) if r.get("due_date") else getdate(r["posting_date"])
+		rows.append({
+			"date": r["posting_date"],
+			"voucher_no": r["voucher_no"],
+			"grand_total": flt(r.get("invoiced") or 0, 2),
+			"paid": flt(flt(r.get("invoiced") or 0) - flt(r.get("outstanding") or 0), 2),
+			"outstanding_amount": flt(r.get("outstanding") or 0, 2),
+			"due_date": r.get("due_date"),
+			"status": statuses.get(r["voucher_no"]),
+			"days_overdue": max(0, (as_of - due).days),
+			"future_amount": flt(r.get("future_amount") or 0, 2),
+		})
+	rows.sort(key=lambda r: r["due_date"] or r["date"])
+	return rows
 
 
 def _get_item_details(item):

@@ -208,6 +208,7 @@ class TransactionHistoryPage {
 						<div class="ctrl-recv-company" style="min-width:180px"></div>
 						<div class="ctrl-recv-as-of" style="min-width:140px"></div>
 						<div class="ctrl-recv-customer" style="min-width:220px"></div>
+						<div class="ctrl-recv-show-future" style="min-width:160px"></div>
 						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-get-receivables">${__("Get")}</button></div>
 					</div>
 					<div class="th-content receivables-content"></div>
@@ -332,6 +333,9 @@ class TransactionHistoryPage {
 		});
 		this.controls.recv_customer = make(".ctrl-recv-customer", {
 			fieldtype: "Link", options: "Customer", fieldname: "customer", label: __("Customer"),
+		});
+		this.controls.recv_show_future = make(".ctrl-recv-show-future", {
+			fieldtype: "Check", fieldname: "show_future_payments", label: __("Show Future Payments"),
 		});
 		if (default_company) this.controls.recv_company.set_value(default_company);
 		this.controls.recv_as_of.set_value(today);
@@ -1090,11 +1094,13 @@ class TransactionHistoryPage {
 			const $dc = $detail.find(`.recv-detail-content[data-for="${party}"]`);
 			if ($dc.data("loaded")) return;
 
+			const show_future = this._recv_state.show_future_payments ?? 0;
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail",
-				args: { customer: party, company, as_of_date },
+				args: { customer: party, company, as_of_date, show_future_payments: show_future },
 				callback: (r) => {
-					$dc.html(this._render_outstanding_detail(r.message || [], true)).data("loaded", true).data("rows", r.message || []);
+					$dc.html(this._render_outstanding_detail(r.message || [], true, show_future))
+						.data("loaded", true).data("rows", r.message || []);
 				},
 			});
 		});
@@ -1581,16 +1587,18 @@ class TransactionHistoryPage {
 		const as_of_date = this.controls.recv_as_of.get_value();
 		if (!company || !as_of_date) { frappe.msgprint(__("Company and As Of Date are required")); return; }
 		const customer = this.controls.recv_customer.get_value() || null;
+		const show_future_payments = this.controls.recv_show_future.get_value() ? 1 : 0;
 		const $content = $(m).find(".receivables-content");
 		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables",
-			args: { company, as_of_date, customer },
+			args: { company, as_of_date, customer, show_future_payments },
 			callback: (r) => {
 				if (r.message != null) {
 					this._recv_state.rows = r.message;
 					this._recv_state.company = company;
 					this._recv_state.as_of_date = as_of_date;
+					this._recv_state.show_future_payments = show_future_payments;
 					this._render_receivables(r.message, company, as_of_date, customer);
 				}
 			},
@@ -1602,6 +1610,7 @@ class TransactionHistoryPage {
 		const $content = $(m).find(".receivables-content");
 		const bc = this.base_currency;
 		const accent = "var(--blue)";
+		const show_future = !!this._recv_state.show_future_payments;
 
 		if (!rows.length) {
 			$content.html(`<div class="text-muted" style="padding:20px">${__("No outstanding receivables found")}</div>`);
@@ -1641,10 +1650,10 @@ class TransactionHistoryPage {
 			`);
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail",
-				args: { customer, company, as_of_date },
+				args: { customer, company, as_of_date, show_future_payments: show_future ? 1 : 0 },
 				callback: (r2) => {
 					$content.find(`.recv-detail-content[data-for="${customer}"]`)
-						.html(this._render_outstanding_detail(r2.message || [], true))
+						.html(this._render_outstanding_detail(r2.message || [], true, show_future))
 						.data("rows", r2.message || []);
 				},
 			});
@@ -1680,6 +1689,7 @@ class TransactionHistoryPage {
 						${th(__("61–90"), "bucket_61_90", "right")}
 						${th(__("90+"), "bucket_90_plus", "right")}
 						${th(__("Last Payment"), "last_payment")}
+						${show_future ? th(__("Future Payments"), "future_payments", "right") : ""}
 						<th style="padding:5px 8px;border-bottom:2px solid ${accent}"></th>
 					</tr>
 				</thead>
@@ -1706,6 +1716,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r.bucket_61_90 > 0 ? format_currency(r.bucket_61_90, bc) : "—"}</td>
 							<td style="padding:4px 8px;text-align:right;${r.bucket_90_plus > 0 ? "color:var(--red);font-weight:700;" : ""}border-bottom:1px solid var(--border-color)">${r.bucket_90_plus > 0 ? format_currency(r.bucket_90_plus, bc) : "—"}</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.last_payment ? frappe.datetime.str_to_user(r.last_payment) : "—"}</td>
+							${show_future ? `<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r.future_payments > 0 ? format_currency(r.future_payments, bc) : "—"}</td>` : ""}
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
@@ -1716,7 +1727,7 @@ class TransactionHistoryPage {
 							</td>
 						</tr>
 						<tr class="recv-detail-row hidden" data-detail-for="${r.customer}">
-							<td colspan="12" style="padding:0;border-bottom:2px solid var(--border-color)">
+							<td colspan="${show_future ? 13 : 12}" style="padding:0;border-bottom:2px solid var(--border-color)">
 								<div class="recv-detail-content" data-for="${r.customer}" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
@@ -1729,11 +1740,12 @@ class TransactionHistoryPage {
 		`);
 	}
 
-	_render_outstanding_detail(rows, is_customer) {
+	_render_outstanding_detail(rows, is_customer, show_future) {
 		if (!rows.length)
 			return `<span class="text-muted">${__("No outstanding invoices found")}</span>`;
 		const bc = this.base_currency;
 		const slug = is_customer ? "sales-invoice" : "purchase-invoice";
+		const show_future_col = is_customer && !!show_future;
 		return `
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:11px">
@@ -1747,6 +1759,7 @@ class TransactionHistoryPage {
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Due Date")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Days Overdue")}</th>
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Status")}</th>
+						${show_future_col ? `<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Future Payment")}</th>` : ""}
 					</tr>
 				</thead>
 				<tbody>
@@ -1760,6 +1773,7 @@ class TransactionHistoryPage {
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—"}</td>
 							<td style="padding:3px 8px;text-align:right;${r.days_overdue > 90 ? "color:var(--red);font-weight:700;" : r.days_overdue > 60 ? "color:var(--orange);" : ""}border-bottom:1px solid var(--border-color)">${r.days_overdue || 0}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
+							${show_future_col ? `<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r.future_amount > 0 ? format_currency(r.future_amount, bc) : "—"}</td>` : ""}
 						</tr>`).join("")}
 				</tbody>
 			</table>
@@ -1979,6 +1993,7 @@ class TransactionHistoryPage {
 						<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/payment-entry/${p.name}" target="_blank">${p.name}</a></td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(p.posting_date)}</td>
+							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(p.paid_amount, bc)}</td>
 							<td style="padding:3px 8px;text-align:right;font-weight:700;color:var(--green);border-bottom:1px solid var(--border-color)">${format_currency(p.unallocated_amount, bc)}</td>
 						</tr>`).join("");
 					adv_html = `
@@ -1989,6 +2004,7 @@ class TransactionHistoryPage {
 								<thead><tr style="background:var(--subtle-fg)">
 									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Payment Entry")}</th>
 									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
+									<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Paid Amount")}</th>
 									<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Unallocated")}</th>
 								</tr></thead>
 								<tbody>${rows_html}</tbody>
