@@ -408,8 +408,14 @@ def get_warehouse_stock(item_code, company):
 
 
 @frappe.whitelist()
-def get_party_details(party_type, party, company=None):
-	"""Return full profile: contacts, address, account stats, and unallocated advances."""
+def get_party_details(party_type, party, company=None, as_of_date=None, show_future_payments=0):
+	"""Return full profile: contacts, address, account stats, and unallocated advances.
+
+	`stats.total_unpaid` is sourced from the same AR/AP report engine as the Receivables/Payables
+	grid (_get_party_balances) so this dialog's "Total Outstanding" always matches the grid row it
+	was opened from, for the same as_of_date/show_future_payments — see the two figures never
+	being independently derived.
+	"""
 	from pypika import Case
 	from frappe.utils import getdate, nowdate
 
@@ -497,6 +503,16 @@ def get_party_details(party_type, party, company=None):
 		stats["annual_billing"] = flt(stats.get("annual_billing") or 0, 2)
 		stats["lifetime_billing"] = flt(stats.get("lifetime_billing") or 0, 2)
 		stats["total_unpaid"] = flt(stats.get("total_unpaid") or 0, 2)
+
+	if company:
+		balance_rows = _get_party_balances(
+			party_type=doctype,
+			company=company,
+			as_of_date=as_of_date or nowdate(),
+			party=party,
+			show_future_payments=show_future_payments,
+		)
+		stats["total_unpaid"] = flt(balance_rows[0]["outstanding"], 2) if balance_rows else 0.0
 
 	# Credit limit (customer only, for the given company)
 	credit_limit = None

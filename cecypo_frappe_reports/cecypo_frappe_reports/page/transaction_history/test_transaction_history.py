@@ -361,6 +361,44 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertEqual(rows[0]["outstanding"], flt(si.grand_total - 300, 2))
 		self.assertEqual(rows[0]["unallocated_advance"], 300.0)
 
+	def test_get_party_details_total_outstanding_matches_get_receivables(self):
+		"""The party-info dialog's "Total Outstanding" must always agree with the grid row it was
+		opened from. Regression for a bug where get_party_details computed its own
+		SUM(Sales Invoice.outstanding_amount) instead of delegating to the same AR report engine
+		as get_receivables, so the two disagreed whenever an unallocated advance was on the
+		account (the advance nets into get_receivables' outstanding but was invisible to the
+		bespoke invoice-only sum)."""
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_party_details,
+			get_receivables,
+		)
+
+		create_sales_invoice(customer="_Test Customer", posting_date="2025-06-15")
+
+		pe = create_payment_entry(
+			payment_type="Receive",
+			party_type="Customer",
+			party="_Test Customer",
+			paid_from="Debtors - _TC",
+			paid_to="_Test Cash - _TC",
+			paid_amount=300,
+			save=True,
+		)
+		pe.posting_date = "2025-06-15"
+		pe.save()
+		pe.submit()
+
+		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15", customer="_Test Customer")
+		self.assertEqual(len(rows), 1)
+
+		details = get_party_details(
+			party_type="customer", party="_Test Customer", company="_Test Company", as_of_date="2025-06-15"
+		)
+		self.assertEqual(details["stats"]["total_unpaid"], rows[0]["outstanding"])
+
 	def test_get_payables_fully_allocated_advance_produces_no_row(self):
 		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 		from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import make_purchase_invoice

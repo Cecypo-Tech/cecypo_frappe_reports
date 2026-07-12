@@ -1205,10 +1205,13 @@ class TransactionHistoryPage {
 		// Party info icon
 		$(m).on("click", ".th-party-info-btn", (e) => {
 			e.stopPropagation();
-			const party = $(e.currentTarget).data("party");
-			const party_type = $(e.currentTarget).data("party-type");
-			const company = $(e.currentTarget).data("company") || "";
-			this._show_party_info_dialog(party_type, party, company);
+			const $btn = $(e.currentTarget);
+			const party = $btn.data("party");
+			const party_type = $btn.data("party-type");
+			const company = $btn.data("company") || "";
+			const as_of_date = $btn.data("as-of");
+			const show_future_payments = $btn.data("show-future") ? 1 : 0;
+			this._show_party_info_dialog(party_type, party, company, as_of_date, show_future_payments);
 		});
 
 		$(m).on("click", ".btn-email-stmt", (e) => {
@@ -1648,7 +1651,7 @@ class TransactionHistoryPage {
 						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
 						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
 					</div>
-					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
+					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="recv-detail-content" data-for="${customer}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -1711,7 +1714,7 @@ class TransactionHistoryPage {
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.customer}" data-party-type="customer" data-company="${company}" title="${info_title}">${_ICONS.info}</span>
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
@@ -1898,10 +1901,10 @@ class TransactionHistoryPage {
 
 	// ── Party info dialog ─────────────────────────────────────────────────────
 
-	_show_party_info_dialog(party_type, party, company) {
+	_show_party_info_dialog(party_type, party, company, as_of_date, show_future_payments) {
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_party_details",
-			args: { party_type, party, company },
+			args: { party_type, party, company, as_of_date, show_future_payments: show_future_payments ? 1 : 0 },
 			callback: (r) => {
 				const d = r.message || {};
 				const bc = this.base_currency;
@@ -1915,7 +1918,6 @@ class TransactionHistoryPage {
 				const val = (v, color) => `<div style="font-size:14px;font-weight:700;${color ? "color:" + color + ";" : ""}">${v}</div>`;
 
 				const unpaid_color = (stats.total_unpaid || 0) > 0 ? "var(--red)" : "var(--green)";
-				const adv_net = (stats.total_unpaid || 0) - (d.unallocated_total || 0);
 
 				let stats_html = `
 					<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
@@ -1952,9 +1954,9 @@ class TransactionHistoryPage {
 
 				if (d.unallocated_total > 0) {
 					stats_html += `
-					<div style="background:var(--alert-bg);border:1px solid var(--blue);border-radius:5px;padding:7px 12px;margin-bottom:14px;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+					<div style="background:var(--alert-bg);border:1px solid var(--blue);border-radius:5px;padding:7px 12px;margin-bottom:14px;font-size:12px">
 						<span>${__("Unallocated Advance")}: <strong style="color:var(--green)">${format_currency(d.unallocated_total, bc)}</strong></span>
-						<span>${__("Net Payable")}: <strong style="color:${adv_net > 0 ? "var(--red)" : "var(--green)"}">${format_currency(Math.max(0, adv_net), bc)}</strong></span>
+						<span style="color:var(--text-muted);margin-left:6px">${__("already netted into Total Outstanding above")}</span>
 					</div>`;
 				}
 
@@ -2164,7 +2166,7 @@ class TransactionHistoryPage {
 						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
 						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
 					</div>
-					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
+					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="pay-detail-content" data-for="${supplier}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -2227,7 +2229,7 @@ class TransactionHistoryPage {
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" title="${info_title}">${_ICONS.info}</span>
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.supplier_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
