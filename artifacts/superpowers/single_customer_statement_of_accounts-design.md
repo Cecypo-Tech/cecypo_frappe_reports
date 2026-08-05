@@ -75,14 +75,16 @@ Both new JS files are added to `app_include_js` in `hooks.py`.
 ```python
 def _build_statement_doc(customer, company, template, as_of_date) -> Document   # private
 @frappe.whitelist() def get_statement_templates(company) -> list[dict]
+@frappe.whitelist() def get_default_recipient(party_type, party) -> str
 @frappe.whitelist() def render_statement_html(customer, company, template, as_of_date) -> str
 @frappe.whitelist() def download_statement(customer, company, template, as_of_date) -> None
 @frappe.whitelist() def email_statement(customer, company, template, as_of_date,
                                         recipient, cc="", bcc="") -> bool
 ```
 
-`_build_statement_doc` is the single point where PSOA semantics are encoded. The three public
-render/download/email endpoints differ only in what they do with its result, so there is exactly one
+`_build_statement_doc` is the single point where PSOA semantics are encoded. `get_default_recipient` is the one endpoint that does not go through it — it only prefills the
+dialog's To field. The three render/download/email endpoints differ only in what they do with the
+built doc, so there is exactly one
 place where the clone, the permission checks, and the date mapping can be wrong.
 
 ### Date mapping
@@ -118,6 +120,9 @@ The dialog offers one "As of" input, but PSOA stores the date differently per re
 |                       [ Download ]  [ Email ]    |
 +--------------------------------------------------+
 ```
+
+The **Document** control is a Frappe `Select` rather than literal radio inputs — Frappe's Dialog has
+no radio fieldtype, and Select is its idiomatic equivalent. Behaviour is as sketched.
 
 `transaction_list` is the seam that lets one dialog serve three surfaces. Transaction History passes
 `{label, get_html}`; the two reports pass nothing, so the Document radio does not render and Statement
@@ -208,7 +213,9 @@ read that party's data can trigger a send.
 
 **Email:**
 - `frappe.sendmail` patched: one attachment, `.pdf` filename derived from the customer, correct recipient
-- recipient resolution order billing contact → primary → `Customer.email_id`, one case per rung
+- recipient resolution order billing contact → `Customer.email_id` → the customer's primary
+  Contact, one case per rung. (ERPNext's "primary email" *is* `Customer.email_id`, so the middle
+  and last rungs are the two genuinely distinct fallbacks, not three.)
 - a user without Customer read access triggers `PermissionError`, covering both the new endpoints and
   the `send_statement_email` fix
 
