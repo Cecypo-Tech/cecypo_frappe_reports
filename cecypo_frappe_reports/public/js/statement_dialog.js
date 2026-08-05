@@ -68,6 +68,9 @@
 				this._fetch_recipient(),
 			]);
 			this.templates = templates;
+			// Record who that recipient belongs to, so applying the party field's default during
+			// Dialog construction is recognised as a no-op rather than refetching it.
+			this._recipient_for = this.opts.party || null;
 
 			const default_doc_type =
 				this.supports_statement && this.templates.length ? DOC_STATEMENT : DOC_TRANSACTION_LIST;
@@ -124,8 +127,15 @@
 				// already knows (a Transaction History row), it is locked to avoid a silent switch.
 				read_only: this.opts.party ? 1 : 0,
 				onchange: () => {
+					// Frappe fires onchange when it applies the field's default, before the user has
+					// touched anything. Without this the recipient is fetched twice and the preview
+					// is rendered twice — the second render landing after the first had painted.
+					const party = this.dialog && this.dialog.get_value("party");
+					if (!party || party === this._recipient_for) return;
+					this._recipient_for = party;
+
 					this._fetch_recipient().then((email) => {
-						if (email) this.dialog.set_value("recipient", email);
+						this.dialog.set_value("recipient", email || "");
 						on_input_change();
 					});
 				},
