@@ -29,6 +29,9 @@ app_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"
 app_include_js = [
 	"/assets/cecypo_frappe_reports/js/best_fit.js",
 	"/assets/cecypo_frappe_reports/js/sortable_table.js",
+	# statement_dialog must precede report_statement_button, which calls into it.
+	"/assets/cecypo_frappe_reports/js/statement_dialog.js",
+	"/assets/cecypo_frappe_reports/js/report_statement_button.js",
 ]
 
 # include js, css files in header of web template

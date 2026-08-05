@@ -4,8 +4,9 @@
 const _ICONS = {
 	copy:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
 	link:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
-	print: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>`,
-	email: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`,
+	// Replaces the former separate print and email icons: both routes now live inside the
+	// statement dialog, which also offers the branded Statement of Accounts.
+	statement: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>`,
 	info:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
 };
 
@@ -1214,33 +1215,17 @@ class TransactionHistoryPage {
 			this._show_party_info_dialog(party_type, party, company, as_of_date, show_future_payments);
 		});
 
-		$(m).on("click", ".btn-email-stmt", (e) => {
+		// One button for both documents and both delivery routes. Previously print and email were
+		// separate icons; adding Statement of Accounts on top would have meant four.
+		$(m).on("click", ".btn-statement", (e) => {
 			e.stopPropagation();
 			const $wrap = $(e.currentTarget).closest(".th-party-actions");
-			const party = $wrap.data("party");
-			const party_type = $wrap.data("party-type");
-			const company = $wrap.data("company");
-			const as_of_date = $wrap.data("as-of");
-			const is_customer = party_type === "customer";
-			const $dc = $(m).find(
-				is_customer
-					? `.recv-detail-content[data-for="${party}"]`
-					: `.pay-detail-content[data-for="${party}"]`
+			this._open_statement_dialog(
+				$wrap.data("party-type"),
+				$wrap.data("party"),
+				$wrap.data("company"),
+				$wrap.data("as-of")
 			);
-			const existing = $dc.data("rows");
-			if (existing) {
-				this._show_email_dialog(party_type, party, company, as_of_date, existing);
-			} else {
-				const method = is_customer
-					? "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail"
-					: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail";
-				const args = is_customer
-					? { customer: party, company, as_of_date }
-					: { supplier: party, company, as_of_date };
-				frappe.call({ method, args, callback: (r) => {
-					this._show_email_dialog(party_type, party, company, as_of_date, r.message || []);
-				}});
-			}
 		});
 
 		$(m).on("click", ".btn-copy-text", (e) => {
@@ -1279,35 +1264,6 @@ class TransactionHistoryPage {
 			const party_type = $wrap.data("party-type");
 			const tab = party_type === "customer" ? "receivables" : "payables";
 			this._copy_party_link(tab, party_type, party);
-		});
-
-		$(m).on("click", ".btn-print-stmt", (e) => {
-			e.stopPropagation();
-			const $wrap = $(e.currentTarget).closest(".th-party-actions");
-			const party = $wrap.data("party");
-			const party_type = $wrap.data("party-type");
-			const company = $wrap.data("company");
-			const as_of_date = $wrap.data("as-of");
-			const is_customer = party_type === "customer";
-			const $dc = $(m).find(
-				is_customer
-					? `.recv-detail-content[data-for="${party}"]`
-					: `.pay-detail-content[data-for="${party}"]`
-			);
-			const existing = $dc.data("rows");
-			if (existing) {
-				this._print_party_statement(party_type, party, company, as_of_date, existing);
-			} else {
-				const method = is_customer
-					? "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail"
-					: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail";
-				const args = is_customer
-					? { customer: party, company, as_of_date }
-					: { supplier: party, company, as_of_date };
-				frappe.call({ method, args, callback: (r) => {
-					this._print_party_statement(party_type, party, company, as_of_date, r.message || []);
-				}});
-			}
 		});
 
 		// ── Pricing bindings ──────────────────────────────────────────────────
@@ -1648,8 +1604,7 @@ class TransactionHistoryPage {
 					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
 						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
 						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
-						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
-						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
 					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
@@ -1730,8 +1685,7 @@ class TransactionHistoryPage {
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
 									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
-									<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
-									<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+									<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 								</div>
 							</td>
 						</tr>
@@ -1866,8 +1820,83 @@ class TransactionHistoryPage {
 </body></html>`;
 	}
 
-	_print_party_statement(party_type, party, company, as_of_date, detail_rows) {
-		const html = this._generate_statement_html(party_type, party, company, as_of_date, detail_rows);
+	// ── Statement dialog ──────────────────────────────────────────────────────
+
+	/**
+	 * Detail rows for a party, reusing what the expanded accordion already loaded.
+	 *
+	 * The cache is only valid for the as-of date it was fetched at, so changing "As of" inside the
+	 * dialog must re-fetch rather than silently reuse rows from another date.
+	 */
+	_detail_rows(party_type, party, company, as_of_date, allow_cache) {
+		const is_customer = party_type === "customer";
+		const $dc = $(this.page.main).find(
+			is_customer
+				? `.recv-detail-content[data-for="${party}"]`
+				: `.pay-detail-content[data-for="${party}"]`
+		);
+		const cached = allow_cache ? $dc.data("rows") : null;
+		if (cached) return Promise.resolve(cached);
+
+		const method = is_customer
+			? "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail"
+			: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail";
+		const args = is_customer
+			? { customer: party, company, as_of_date }
+			: { supplier: party, company, as_of_date };
+		return frappe.xcall(method, args).then((rows) => rows || []);
+	}
+
+	_open_statement_dialog(party_type, party, company, as_of_date) {
+		cecypo_reports.statement.open({
+			party,
+			party_type,
+			company,
+			as_of_date,
+			// Supplied only from here: the query reports have no transaction list to offer, so their
+			// dialog shows no Document selector at all.
+			transaction_list: {
+				label: __("Transaction list"),
+				get_html: (ctx) =>
+					this._detail_rows(
+						ctx.party_type,
+						ctx.party,
+						ctx.company,
+						ctx.as_of_date,
+						ctx.as_of_date === as_of_date
+					).then((rows) =>
+						this._generate_statement_html(ctx.party_type, ctx.party, ctx.company, ctx.as_of_date, rows)
+					),
+				download: (html) => this._print_html(html),
+				send: (html, ctx, { recipient, cc, bcc }) =>
+					frappe
+						.xcall(
+							"cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.send_statement_email",
+							{
+								party_type: ctx.party_type,
+								party: ctx.party,
+								company: ctx.company,
+								as_of_date: ctx.as_of_date,
+								html_content: html,
+								recipient_email: recipient,
+								cc,
+								bcc,
+							}
+						)
+						.then(() =>
+							frappe.show_alert({
+								message: __("Transaction list queued to {0}", [recipient]),
+								indicator: "green",
+							})
+						),
+			},
+		});
+	}
+
+	// The transaction list is plain HTML rather than a server-rendered PDF, so "download" means
+	// hand it to the browser's own print-to-PDF, as it always has.
+	_print_html(html) {
+		if (!html) { frappe.msgprint(__("Nothing to print yet.")); return; }
 		const win = window.open("", "_blank");
 		if (!win) { frappe.msgprint(__("Popup was blocked. Please allow popups for this site and try again.")); return; }
 		win.document.write(html);
@@ -2042,67 +2071,6 @@ class TransactionHistoryPage {
 		});
 	}
 
-	// ── Email dialog ──────────────────────────────────────────────────────────
-
-	_show_email_dialog(party_type, party, company, as_of_date, detail_rows) {
-		frappe.call({
-			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_party_details",
-			args: { party_type, party },
-			callback: (r) => {
-				const primary_email = (r.message || {}).primary_email || "";
-				const html = this._generate_statement_html(party_type, party, company, as_of_date, detail_rows);
-
-				const blob = new Blob([html], { type: "text/html" });
-				const preview_url = URL.createObjectURL(blob);
-
-				const dialog = new frappe.ui.Dialog({
-					title: __("Email Transaction List — {0}", [party]),
-					size: "extra-large",
-					fields: [
-						{
-							fieldname: "recipient", fieldtype: "Data",
-							label: __("To"), reqd: 1, default: primary_email,
-						},
-						{
-							fieldname: "cc", fieldtype: "Data",
-							label: __("CC"),
-						},
-						{
-							fieldname: "bcc", fieldtype: "Data",
-							label: __("BCC"),
-						},
-						{
-							fieldname: "preview_html", fieldtype: "HTML",
-							options: `<div style="margin-top:10px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${__("Preview")}</div>
-								<iframe src="${preview_url}" style="width:100%;height:420px;border:1px solid var(--border-color);border-radius:4px;background:#fff"></iframe>`,
-						},
-					],
-					primary_action_label: __("Send"),
-					primary_action: (values) => {
-						dialog.hide();
-						frappe.show_alert({ message: __("Sending email…"), indicator: "blue" });
-						frappe.call({
-							method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.send_statement_email",
-							args: {
-								party_type, party, company, as_of_date,
-								html_content: html,
-								recipient_email: values.recipient,
-								cc: values.cc || "",
-								bcc: values.bcc || "",
-							},
-							callback: () => {
-								URL.revokeObjectURL(preview_url);
-								frappe.show_alert({ message: __("Email sent"), indicator: "green" });
-							},
-						});
-					},
-				});
-				dialog.onhide = () => URL.revokeObjectURL(preview_url);
-				dialog.show();
-			},
-		});
-	}
-
 	// ── Payables ──────────────────────────────────────────────────────────────
 
 	_load_payables() {
@@ -2163,8 +2131,7 @@ class TransactionHistoryPage {
 					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
 						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
 						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
-						<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
-						<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
 					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
@@ -2245,8 +2212,7 @@ class TransactionHistoryPage {
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
 									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
-									<button class="th-action-btn btn-print-stmt" title="${__("Print")}">${_ICONS.print}</button>
-									<button class="th-action-btn btn-email-stmt" title="${__("Email")}">${_ICONS.email}</button>
+									<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 								</div>
 							</td>
 						</tr>

@@ -170,6 +170,19 @@ def get_statement_templates(company):
 
 
 @frappe.whitelist()
+def get_default_recipient(party_type, party):
+	"""Address to prefill the dialog's To field with, or "" when the party has none on file."""
+	doctype = "Customer" if party_type == "customer" else "Supplier"
+	frappe.has_permission(doctype, "read", party, throw=True)
+
+	if doctype == "Supplier":
+		return frappe.db.get_value("Supplier", party, "email_id") or ""
+
+	recipients = _resolve_recipients(party)
+	return recipients[0] if recipients else ""
+
+
+@frappe.whitelist()
 def render_statement_html(customer, company, template, as_of_date=None):
 	"""Statement HTML for the dialog preview.
 

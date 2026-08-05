@@ -12,6 +12,7 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_build_statement_doc,
 	_resolve_recipients,
 	email_statement,
+	get_default_recipient,
 	get_statement_templates,
 	render_statement_html,
 )
@@ -213,6 +214,22 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", None)
 
 		self.assertEqual(_resolve_recipients(TEST_CUSTOMER), [])
+
+	def test_get_default_recipient_returns_empty_string_not_none(self):
+		"""The dialog assigns this straight into a Data field, where None would render as "None"."""
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", None)
+
+		self.assertEqual(get_default_recipient("customer", TEST_CUSTOMER), "")
+
+	def test_get_default_recipient_requires_read_permission(self):
+		user = self._make_user_without_customer_access()
+
+		frappe.set_user(user)
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				get_default_recipient("customer", TEST_CUSTOMER)
+		finally:
+			frappe.set_user("Administrator")
 
 	# ── email ────────────────────────────────────────────────────────────────
 
