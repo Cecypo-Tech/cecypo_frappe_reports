@@ -565,7 +565,16 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 
 @frappe.whitelist()
 def send_statement_email(party_type, party, company, as_of_date, html_content, recipient_email, cc="", bcc=""):
-	"""Send a transaction list statement as HTML email in the background."""
+	"""Send a transaction list statement as HTML email in the background.
+
+	`html_content` is client-supplied, so this method is gated on read access to the party it claims
+	to be about. Without the gate any logged-in user could mail arbitrary HTML to any address from
+	the site's mail server.
+	"""
+	frappe.has_permission(
+		"Customer" if party_type == "customer" else "Supplier", "read", party, throw=True
+	)
+
 	def split_emails(s):
 		return [e.strip() for e in s.replace(";", ",").split(",") if e.strip()] if s else []
 
