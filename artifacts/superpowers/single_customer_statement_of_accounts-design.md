@@ -167,7 +167,7 @@ on field change (debounced, sequence-numbered)
 |---|---|
 | No PSOA record for the company | Statement option disabled with an inline note and a link to create one. Transaction list still works, so the dialog never becomes useless. |
 | Customer has no rows in the period | `get_statement_dict` returns `{}` and `get_report_pdf` returns `False`. All three endpoints detect this and throw *"No transactions for {customer} in the selected period."* rather than emitting a blank PDF. |
-| No email on file | Email button disabled with the reason and a link to the Customer. Download unaffected. |
+| No email on file | Email button disabled, with the reason as its tooltip; the To field stays editable so a one-off address can be typed. Download unaffected. |
 | Permission denied | `has_permission("Customer", "read", …)` and `template.check_permission("read")` throw **before** any rendering, so no data reaches a preview the user may not read. |
 | Template company ≠ selected company | Defensive throw. The dropdown is company-filtered, but the endpoint cannot trust its client. |
 | `wkhtmltopdf` failure | Surfaces as it does for PSOA today. The preview path never invokes it, so a broken PDF toolchain still allows viewing and diagnosis. |
@@ -180,6 +180,9 @@ on field change (debounced, sequence-numbered)
   email run. Asserted by test.
 - **The client never supplies statement HTML.** The PSOA endpoints take
   `(customer, company, template, date)` and render server-side.
+- **Actions re-derive; they never act on the preview.** Download and Email rebuild from the current
+  field values rather than reusing whatever the debounced preview last rendered, so a click inside
+  the debounce window cannot act on superseded filters.
 
 ## Security fix
 
