@@ -43,7 +43,6 @@
 			// Preview renders are async and debounced, so a slow early response can land after a
 			// fast later one. Every render carries a sequence number and stale ones are dropped.
 			this.seq = 0;
-			this.preview_html = null;
 			this.cc_shown = false;
 		}
 
@@ -69,7 +68,6 @@
 				this._fetch_recipient(),
 			]);
 			this.templates = templates;
-			this.auto_recipient_missing = !recipient;
 
 			const default_doc_type =
 				this.supports_statement && this.templates.length ? DOC_STATEMENT : DOC_TRANSACTION_LIST;
@@ -127,7 +125,6 @@
 				read_only: this.opts.party ? 1 : 0,
 				onchange: () => {
 					this._fetch_recipient().then((email) => {
-						this.auto_recipient_missing = !email;
 						if (email) this.dialog.set_value("recipient", email);
 						on_input_change();
 					});
@@ -172,6 +169,10 @@
 		}
 
 		_sync_fields() {
+			// Applying field defaults during Dialog construction can fire onchange before the
+			// assignment to this.dialog has completed.
+			if (!this.dialog) return;
+
 			const d = this.dialog;
 			const is_statement = this._is_statement();
 
@@ -251,6 +252,7 @@
 		// ── Preview ──────────────────────────────────────────────────────────
 
 		_refresh_preview() {
+			if (!this.dialog) return;
 			clearTimeout(this._preview_timer);
 			this._preview_timer = setTimeout(() => this._render_preview(), PREVIEW_DEBOUNCE_MS);
 		}
@@ -284,7 +286,6 @@
 			} catch (e) {
 				if (mine !== this.seq) return;
 				this._set_preview_message(__("Preview unavailable."));
-				this.preview_html = null;
 				this._sync_fields();
 				return;
 			}
@@ -292,7 +293,6 @@
 			// A slower earlier request must not overwrite a newer render.
 			if (mine !== this.seq) return;
 
-			this.preview_html = html;
 			this.dialog.fields_dict.preview.$wrapper.html(
 				`<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${__("Preview")}</div>
 				<iframe class="cecypo-statement-preview" style="width:100%;height:420px;border:1px solid var(--border-color);border-radius:4px;background:#fff"></iframe>`
@@ -302,12 +302,15 @@
 
 		// ── Actions ──────────────────────────────────────────────────────────
 
-		_download() {
+		async _download() {
 			const ctx = this._context();
 			if (!ctx.party) return;
 
 			if (!this._is_statement()) {
-				this.transaction_list.download(this.preview_html, ctx);
+				// Re-derive rather than reuse the preview. Clicking inside the preview debounce
+				// window would otherwise act on HTML built from the previous field values.
+				this.transaction_list.download(await this.transaction_list.get_html(ctx), ctx);
+				this.dialog.hide();
 				return;
 			}
 
@@ -324,7 +327,7 @@
 			this.dialog.hide();
 		}
 
-		_email() {
+		async _email() {
 			const ctx = this._context();
 			const recipient = (this.dialog.get_value("recipient") || "").trim();
 			if (!ctx.party || !recipient) return;
@@ -333,7 +336,10 @@
 			const bcc = this.dialog.get_value("bcc") || "";
 
 			if (!this._is_statement()) {
-				this.transaction_list.send(this.preview_html, ctx, { recipient, cc, bcc });
+				// Same reason as _download: send what the fields currently say, not what the
+				// preview happens to be showing.
+				const html = await this.transaction_list.get_html(ctx);
+				this.transaction_list.send(html, ctx, { recipient, cc, bcc });
 				this.dialog.hide();
 				return;
 			}
