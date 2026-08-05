@@ -1603,7 +1603,7 @@ class TransactionHistoryPage {
 				<div style="margin-bottom:12px;display:flex;gap:4px;align-items:center">
 					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
 						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
-						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+						<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
 					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
@@ -1684,7 +1684,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
-									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+									<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 									<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 								</div>
 							</td>
@@ -2130,7 +2130,7 @@ class TransactionHistoryPage {
 				<div style="margin-bottom:12px;display:flex;gap:4px;align-items:center">
 					<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
 						<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
-						<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+						<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
 					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
@@ -2211,7 +2211,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
 								<div class="th-party-actions" style="display:flex;gap:1px;align-items:center" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}">
 									<button class="th-action-btn btn-copy-text" title="${__("Copy text")}">${_ICONS.copy}</button>
-									<button class="th-action-btn btn-copy-link" title="${__("Copy link")}">${_ICONS.link}</button>
+									<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 									<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 								</div>
 							</td>
