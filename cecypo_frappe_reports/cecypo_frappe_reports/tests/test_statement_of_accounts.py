@@ -313,6 +313,50 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertNotIn(quiet.name, will_send_names)
 		self.assertNotIn(quiet.name, no_email_names)
 
+	def test_bulk_doc_seeds_with_a_readable_customer_when_the_first_is_unpermitted(self):
+		"""Regression: frappe.get_all does not check permissions, so _company_customers()[0] can be
+		a customer this caller cannot read. The old code fed customers[0] straight into
+		_build_statement_doc, whose has_permission(throw=True) then blew up the whole call on a
+		customer nobody asked to see. The seed must skip past an unreadable customer instead."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+
+		customers = _company_customers(TEST_COMPANY)
+		unreadable = customers[0].name
+		real_has_permission = frappe.has_permission
+
+		def side_effect(*args, **kwargs):
+			doctype = args[0] if args else kwargs.get("doctype")
+			doc = args[2] if len(args) > 2 else kwargs.get("doc")
+			if doctype == "Customer" and doc == unreadable:
+				if kwargs.get("throw"):
+					raise frappe.PermissionError
+				return False
+			return real_has_permission(*args, **kwargs)
+
+		with patch("frappe.has_permission", side_effect=side_effect):
+			doc = _build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
+
+		# Building must succeed (no raw PermissionError) and still widen to every customer, not
+		# just the readable seed.
+		self.assertGreater(len(doc.customers), 1)
+
+	def test_bulk_doc_throws_a_readable_message_when_no_customer_is_permitted(self):
+		"""If every GL-active customer is unreadable, the seed loop finds none: this must throw a
+		clear, catchable error rather than letting an unreadable customers[0] raise a bare
+		PermissionError from deep inside _build_statement_doc."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+
+		with patch("frappe.has_permission", return_value=False):
+			with self.assertRaises(frappe.ValidationError):
+				_build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
+
 	def test_preview_bulk_statements_never_generates_a_pdf(self):
 		"""Pins invariant 2: the preview answers who has transactions from get_statement_dict's HTML
 		and must never fall through to get_report_pdf, even when the toolchain is broken."""
@@ -346,6 +390,48 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		mock_enqueue.assert_called_once()
 		mock_sendmail.assert_not_called()
+
+	def test_email_bulk_statements_enqueue_is_deduplicated_by_job_id(self):
+		"""Regression: the whole expensive pass runs before frappe.enqueue, so a proxy or gunicorn
+		timeout can show the browser a failure while the job still lands; a retry must not mail
+		everyone twice. frappe.enqueue's own deduplicate=True + job_id refuses to re-queue a job
+		with a matching id that is already queued or running, so pin that both are actually
+		passed and that the id is keyed on the inputs that define the run."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+		as_of = today()
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			email_bulk_statements(TEST_COMPANY, tpl.name, as_of)
+
+		kwargs = mock_enqueue.call_args.kwargs
+		self.assertTrue(kwargs.get("deduplicate"))
+		self.assertIn("job_id", kwargs)
+		self.assertIn(TEST_COMPANY, kwargs["job_id"])
+		self.assertIn(tpl.name, kwargs["job_id"])
+		self.assertIn(str(as_of), kwargs["job_id"])
+
+	def test_email_bulk_statements_throws_and_does_not_enqueue_when_nobody_eligible(self):
+		"""Pins one of the two guards the plan's self-review calls out as mattering most: when no
+		customer has both transactions and an address, the endpoint must throw rather than
+		silently queue a job for zero recipients. Deliberately leaves the one transacting
+		customer without any resolvable address, so preview's will_send is empty while
+		total_customers is not."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "customer_primary_contact", None)
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			with self.assertRaises(frappe.ValidationError):
+				email_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_enqueue.assert_not_called()
 
 	def test_email_bulk_statements_queued_count_matches_preview_will_send(self):
 		"""The toast the user sees must never disagree with the preview: both are read from the
@@ -429,7 +515,11 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 	def test_send_bulk_statements_permission_error_costs_one_customer_not_the_run(self):
 		"""_resolve_recipients raising frappe.PermissionError sits inside the same try as the
-		render and send, so a permission gap for one customer must not abort the others."""
+		render and send, so a permission gap for one customer must not abort the others. It is
+		caught separately from the generic Exception handler and must NOT be logged: it is the
+		expected, already-counted-in-the-preview case for a restricted user, and logging it under
+		the failure title would bury genuine failures in the one channel where they must be
+		found."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
@@ -457,8 +547,7 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		mock_sendmail.assert_called_once()
 		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
-		mock_log_error.assert_called_once()
-		self.assertIn(OTHER_CUSTOMER, mock_log_error.call_args.kwargs["message"])
+		mock_log_error.assert_not_called()
 
 	def test_send_bulk_statements_never_saves_the_doc(self):
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice

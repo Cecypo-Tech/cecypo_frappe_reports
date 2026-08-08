@@ -125,8 +125,17 @@ def _build_bulk_statement_doc(company, template, as_of_date=None):
 	if not customers:
 		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))
 
-	# Seed with the first customer so the shared builder runs its checks, then widen.
-	doc = _build_statement_doc(customers[0].name, company, template, as_of_date)
+	# frappe.get_all does not check permissions, so customers[0] is whoever sorts first, not
+	# someone this user may read. Seeding _build_statement_doc with an unreadable customer makes
+	# its has_permission check throw and takes the whole preview or run down with it.
+	seed = next(
+		(c.name for c in customers if frappe.has_permission("Customer", "read", c.name)), None
+	)
+	if not seed:
+		frappe.throw(_("You are not permitted to view any customer for {0}.").format(frappe.bold(company)))
+
+	# Seed with a readable customer so the shared builder runs its checks, then widen.
+	doc = _build_statement_doc(seed, company, template, as_of_date)
 	doc.customers = []
 	for customer in customers:
 		doc.append(
@@ -251,6 +260,10 @@ def _send_bulk_statements(company, template, as_of_date=None, user=None):
 				reference_name=entry.customer,
 				now=False,
 			)
+		except frappe.PermissionError:
+			# Expected for a restricted user; the preview already counted them. Not an error,
+			# and logging it under the failure title would bury real failures.
+			continue
 		except Exception:
 			frappe.log_error(
 				title="Bulk Statement of Accounts: send failed",
@@ -354,6 +367,12 @@ def email_bulk_statements(company, template, as_of_date=None):
 		"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._send_bulk_statements",
 		queue="long",
 		timeout=1800,
+		# A retry after a lost or timed-out response must not mail everyone twice. The id is
+		# keyed on exactly the inputs that define the run, so re-sending the same statement set
+		# is a no-op while it is in flight, while a genuinely different date or template still
+		# queues.
+		job_id=f"bulk-soa::{company}::{template}::{as_of_date or today()}",
+		deduplicate=True,
 		company=company,
 		template=template,
 		as_of_date=as_of_date,
