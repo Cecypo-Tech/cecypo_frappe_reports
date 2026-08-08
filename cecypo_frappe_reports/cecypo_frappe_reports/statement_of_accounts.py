@@ -18,6 +18,7 @@ import re
 import frappe
 from frappe import _
 from frappe.utils import add_months, getdate, today
+from frappe.utils.pdf import get_pdf
 
 from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts import (
 	get_context,
@@ -201,6 +202,62 @@ def _resolve_recipients(customer):
 	return []
 
 
+def _send_bulk_statements(company, template, as_of_date=None, user=None):
+	"""Render and send one statement per customer with transactions.
+
+	Runs in a background job: rendering N statements inside a web request would time out, and
+	the failure mode is a half-finished send with no record of where it stopped.
+
+	One customer must never abort the run, so a render or send failure is logged and skipped.
+	The POS shows only a queued toast, so this log is the only place a failure can be found.
+	"""
+	if user:
+		frappe.set_user(user)
+
+	doc = _build_bulk_statement_doc(company, template, as_of_date)
+
+	# get_report_pdf is deliberately NOT used here. It renders every customer in one pass, so a
+	# render failure on customer 3 aborts customers 4..N before any per-customer handler sees it
+	# — the exact failure this loop exists to prevent. Splitting it keeps the one expensive part
+	# (the AR/GL query, via get_statement_dict) as a single pass while making each PDF render
+	# individually survivable.
+	statements = get_statement_dict(doc) or {}
+
+	for entry in doc.customers:
+		statement_html = statements.get(entry.customer)
+		if not statement_html:
+			continue
+
+		try:
+			# Inside the try: _resolve_recipients raises PermissionError per customer, and
+			# get_pdf can throw on a broken image or a wkhtmltopdf failure. Either must cost
+			# one customer, not the run.
+			recipients = _resolve_recipients(entry.customer)
+			if not recipients:
+				continue
+
+			pdf = get_pdf(statement_html, {"orientation": doc.orientation})
+			context = get_context(entry.customer, doc)
+			frappe.sendmail(
+				recipients=recipients,
+				subject=_render_or(doc.subject, context, _("Statement of Accounts")),
+				message=_render_or(
+					doc.body, context, _("Please find your Statement of Accounts attached.")
+				),
+				attachments=[
+					{"fname": _statement_filename(doc, entry.customer), "fcontent": pdf}
+				],
+				reference_doctype="Customer",
+				reference_name=entry.customer,
+				now=False,
+			)
+		except Exception:
+			frappe.log_error(
+				title="Bulk Statement of Accounts: send failed",
+				message=f"{entry.customer}\n\n{frappe.get_traceback()}",
+			)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -283,6 +340,26 @@ def preview_bulk_statements(company, template, as_of_date=None):
 		"no_transactions": len(doc.customers) - len(statements),
 		"total_customers": len(doc.customers),
 	}
+
+
+@frappe.whitelist()
+def email_bulk_statements(company, template, as_of_date=None):
+	"""Queue a statement for every customer of `company` who has transactions."""
+	preview = preview_bulk_statements(company, template, as_of_date)
+	queued = len(preview["will_send"])
+	if not queued:
+		frappe.throw(_("No customer has both transactions and an email address on file."))
+
+	frappe.enqueue(
+		"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._send_bulk_statements",
+		queue="long",
+		timeout=1800,
+		company=company,
+		template=template,
+		as_of_date=as_of_date,
+		user=frappe.session.user,
+	)
+	return {"queued": queued}
 
 
 @frappe.whitelist()

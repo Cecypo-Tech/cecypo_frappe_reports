@@ -13,6 +13,8 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_build_statement_doc,
 	_company_customers,
 	_resolve_recipients,
+	_send_bulk_statements,
+	email_bulk_statements,
 	email_statement,
 	get_default_recipient,
 	get_statement_templates,
@@ -327,6 +329,178 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		mock_pdf.assert_not_called()
 		self.assertIn("will_send", result)
+
+	# ── bulk send ────────────────────────────────────────────────────────────
+
+	def test_email_bulk_statements_enqueues_rather_than_sends_inline(self):
+		"""The whitelisted endpoint must return from the request without ever touching
+		frappe.sendmail; rendering N statements inline would time out the request."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+
+		with patch("frappe.enqueue") as mock_enqueue, patch("frappe.sendmail") as mock_sendmail:
+			email_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_enqueue.assert_called_once()
+		mock_sendmail.assert_not_called()
+
+	def test_email_bulk_statements_queued_count_matches_preview_will_send(self):
+		"""The toast the user sees must never disagree with the preview: both are read from the
+		same preview_bulk_statements call, not two independent counts that could drift apart."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
+		tpl = self._make_template()
+
+		preview = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+		with patch("frappe.enqueue"):
+			result = email_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(result["queued"], len(preview["will_send"]))
+
+	def test_send_bulk_statements_skips_customer_with_no_recipient_without_aborting(self):
+		"""One customer with no resolvable address must cost only that customer, not the run."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+
+		def side_effect(customer):
+			return [] if customer == OTHER_CUSTOMER else ["primary@example.com"]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				side_effect=side_effect,
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
+
+	def test_send_bulk_statements_logs_and_skips_a_render_failure_without_aborting_the_run(self):
+		"""Pins the reason get_report_pdf is not used: get_statement_dict runs once for every
+		customer, but get_pdf is called per customer inside the try, so a render failure for one
+		customer costs only that customer. Patching the module's own `get_pdf` (rather than
+		get_report_pdf) means this test would fail to catch a regression that "simplifies" the
+		implementation back to a single get_report_pdf(doc, consolidated=False) call, since that
+		call renders every customer in one uninterruptible pass before this handler ever runs."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "good@example.com")
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", "bad@example.com")
+		tpl = self._make_template()
+
+		def failing_get_pdf(html, options=None):
+			if OTHER_CUSTOMER in html:
+				raise Exception("simulated render failure")
+			return b"%PDF-fake"
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				side_effect=failing_get_pdf,
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+			patch("frappe.log_error") as mock_log_error,
+		):
+			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
+		mock_log_error.assert_called_once()
+		self.assertIn(OTHER_CUSTOMER, mock_log_error.call_args.kwargs["message"])
+
+	def test_send_bulk_statements_permission_error_costs_one_customer_not_the_run(self):
+		"""_resolve_recipients raising frappe.PermissionError sits inside the same try as the
+		render and send, so a permission gap for one customer must not abort the others."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+
+		def side_effect(customer):
+			if customer == OTHER_CUSTOMER:
+				raise frappe.PermissionError
+			return ["primary@example.com"]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				side_effect=side_effect,
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+			patch("frappe.log_error") as mock_log_error,
+		):
+			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
+		mock_log_error.assert_called_once()
+		self.assertIn(OTHER_CUSTOMER, mock_log_error.call_args.kwargs["message"])
+
+	def test_send_bulk_statements_never_saves_the_doc(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail"),
+		):
+			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(
+			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
+		)
+		self.assertEqual(
+			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
+		)
+
+	def test_email_bulk_statements_never_saves_the_doc(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
+
+		with patch("frappe.enqueue"):
+			email_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(
+			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
+		)
+		self.assertEqual(
+			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
+		)
 
 	# ── template listing ─────────────────────────────────────────────────────
 
