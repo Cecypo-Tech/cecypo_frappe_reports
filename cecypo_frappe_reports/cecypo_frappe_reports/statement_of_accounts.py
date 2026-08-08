@@ -84,6 +84,40 @@ def _build_statement_doc(customer, company, template, as_of_date=None):
 	return doc
 
 
+def _company_customers(company):
+	"""Every enabled customer that could appear on this company's statements.
+
+	Deliberately broad: get_statement_dict drops the ones with no rows, so the "has
+	transactions" filter is inherited from the report rather than guessed at here.
+	"""
+	return frappe.get_all(
+		"Customer",
+		filters={"disabled": 0},
+		fields=["name", "customer_name"],
+		order_by="customer_name asc",
+	)
+
+
+def _build_bulk_statement_doc(company, template, as_of_date=None):
+	"""The single-customer clone, widened to every customer of the company.
+
+	Reuses _build_statement_doc so the permission checks, the template-company guard and the
+	report-type date mapping cannot drift between the single and bulk paths. Never saved.
+	"""
+	customers = _company_customers(company)
+	if not customers:
+		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))
+
+	# Seed with the first customer so the shared builder runs its checks, then widen.
+	doc = _build_statement_doc(customers[0].name, company, template, as_of_date)
+	doc.customers = []
+	for customer in customers:
+		doc.append(
+			"customers", {"customer": customer.name, "customer_name": customer.customer_name}
+		)
+	return doc
+
+
 def _no_transactions_error(customer, doc):
 	label = frappe.db.get_value("Customer", customer, "customer_name") or customer
 	period = (
@@ -190,6 +224,37 @@ def render_statement_html(customer, company, template, as_of_date=None):
 	toolchain still lets users see the statement and diagnose.
 	"""
 	return _render_html(_build_statement_doc(customer, company, template, as_of_date))
+
+
+@frappe.whitelist()
+def preview_bulk_statements(company, template, as_of_date=None):
+	"""Who would receive a statement, without sending or rendering a single PDF.
+
+	get_statement_dict returns HTML per customer and omits anyone with no rows, so it answers
+	"who has transactions" without invoking wkhtmltopdf.
+	"""
+	doc = _build_bulk_statement_doc(company, template, as_of_date)
+	statements = get_statement_dict(doc) or {}
+
+	will_send = []
+	no_email = []
+	for entry in doc.customers:
+		if entry.customer not in statements:
+			continue
+		recipients = _resolve_recipients(entry.customer)
+		row = {"customer": entry.customer, "customer_name": entry.customer_name}
+		if recipients:
+			row["recipient"] = recipients[0]
+			will_send.append(row)
+		else:
+			no_email.append(row)
+
+	return {
+		"will_send": will_send,
+		"no_email": no_email,
+		"no_transactions": len(doc.customers) - len(statements),
+		"total_customers": len(doc.customers),
+	}
 
 
 @frappe.whitelist()

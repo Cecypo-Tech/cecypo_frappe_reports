@@ -9,11 +9,13 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_months, getdate, today
 
 from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
+	_build_bulk_statement_doc,
 	_build_statement_doc,
 	_resolve_recipients,
 	email_statement,
 	get_default_recipient,
 	get_statement_templates,
+	preview_bulk_statements,
 	render_statement_html,
 )
 
@@ -150,6 +152,89 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			_build_statement_doc(None, TEST_COMPANY, tpl.name, today())
+
+	# ── bulk preview ─────────────────────────────────────────────────────────
+
+	def test_bulk_doc_widens_to_every_enabled_customer_and_is_never_persisted(self):
+		"""The bulk clone must reach every enabled customer, not just the template's own two, and
+		must stay in memory the exact same way the single-customer clone does."""
+		tpl = self._make_template()
+		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
+
+		doc = _build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
+
+		self.assertGreater(len(doc.customers), 1)
+		self.assertTrue(doc.is_new())
+		self.assertIsNone(doc.get("__unsaved_name"))
+		# The template itself keeps its original two rows and is untouched.
+		self.assertEqual(
+			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
+		)
+		self.assertEqual(
+			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
+		)
+
+	def test_bulk_doc_applies_the_same_template_company_guard(self):
+		"""Reuses _build_statement_doc, so a template belonging to another company must still throw
+		even though the bulk path never receives an explicit customer from the caller."""
+		tpl = self._make_template()
+
+		with self.assertRaises(frappe.ValidationError):
+			_build_bulk_statement_doc("_Test Company 2", tpl.name, today())
+
+	def test_preview_bulk_statements_returns_expected_keys(self):
+		tpl = self._make_template()
+
+		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertIn("will_send", result)
+		self.assertIn("no_email", result)
+		self.assertIn("no_transactions", result)
+
+	def test_customer_with_transactions_but_no_email_lands_in_no_email_not_will_send(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=500)
+		tpl = self._make_template()
+
+		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		no_email_names = [row["customer"] for row in result["no_email"]]
+		will_send_names = [row["customer"] for row in result["will_send"]]
+		self.assertIn(OTHER_CUSTOMER, no_email_names)
+		self.assertNotIn(OTHER_CUSTOMER, will_send_names)
+
+	def test_customer_with_no_transactions_appears_in_neither_list(self):
+		quiet = frappe.new_doc("Customer")
+		quiet.customer_name = f"SOA Quiet Bulk Customer {frappe.generate_hash(length=6)}"
+		quiet.insert(ignore_permissions=True)
+		tpl = self._make_template()
+
+		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		will_send_names = [row["customer"] for row in result["will_send"]]
+		no_email_names = [row["customer"] for row in result["no_email"]]
+		self.assertNotIn(quiet.name, will_send_names)
+		self.assertNotIn(quiet.name, no_email_names)
+
+	def test_preview_bulk_statements_never_generates_a_pdf(self):
+		"""Pins invariant 2: the preview answers who has transactions from get_statement_dict's HTML
+		and must never fall through to get_report_pdf, even when the toolchain is broken."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+
+		with patch(
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_report_pdf"
+		) as mock_pdf:
+			mock_pdf.side_effect = AssertionError("preview must not render a PDF")
+			result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		mock_pdf.assert_not_called()
+		self.assertIn("will_send", result)
 
 	# ── template listing ─────────────────────────────────────────────────────
 
