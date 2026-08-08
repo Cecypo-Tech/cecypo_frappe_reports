@@ -85,14 +85,30 @@ def _build_statement_doc(customer, company, template, as_of_date=None):
 
 
 def _company_customers(company):
-	"""Every enabled customer that could appear on this company's statements.
+	"""Enabled customers with any ledger activity against `company`.
 
-	Deliberately broad: get_statement_dict drops the ones with no rows, so the "has
-	transactions" filter is inherited from the report rather than guessed at here.
+	Scoped through GL Entry rather than the Customer doctype, which has no company field. A
+	site-wide list would still send correctly — get_statement_dict drops anyone with no rows —
+	but it would report every customer on the site in `total_customers` and `no_transactions`,
+	and those counts are the only visibility the user gets. It would also run a GL/AR query per
+	customer for customers of other companies.
+
+	Deliberately broader than the statement period: this answers "could relate to this company
+	at all", and get_statement_dict still applies the period filter. That keeps the
+	has-transactions decision in one place rather than two that could disagree.
 	"""
+	parties = frappe.get_all(
+		"GL Entry",
+		filters={"company": company, "party_type": "Customer", "is_cancelled": 0},
+		distinct=True,
+		pluck="party",
+	)
+	if not parties:
+		return []
+
 	return frappe.get_all(
 		"Customer",
-		filters={"disabled": 0},
+		filters={"disabled": 0, "name": ["in", parties]},
 		fields=["name", "customer_name"],
 		order_by="customer_name asc",
 	)
@@ -238,10 +254,21 @@ def preview_bulk_statements(company, template, as_of_date=None):
 
 	will_send = []
 	no_email = []
+	not_permitted = 0
 	for entry in doc.customers:
 		if entry.customer not in statements:
 			continue
-		recipients = _resolve_recipients(entry.customer)
+
+		try:
+			recipients = _resolve_recipients(entry.customer)
+		except frappe.PermissionError:
+			# _resolve_recipients checks Customer read per customer. A user with restricted
+			# customer visibility must not have their whole preview die on one customer they
+			# cannot see — count them and move on. Counted rather than silently dropped so the
+			# totals still reconcile, and never named, so nothing leaks.
+			not_permitted += 1
+			continue
+
 		row = {"customer": entry.customer, "customer_name": entry.customer_name}
 		if recipients:
 			row["recipient"] = recipients[0]
@@ -252,6 +279,7 @@ def preview_bulk_statements(company, template, as_of_date=None):
 	return {
 		"will_send": will_send,
 		"no_email": no_email,
+		"not_permitted": not_permitted,
 		"no_transactions": len(doc.customers) - len(statements),
 		"total_customers": len(doc.customers),
 	}

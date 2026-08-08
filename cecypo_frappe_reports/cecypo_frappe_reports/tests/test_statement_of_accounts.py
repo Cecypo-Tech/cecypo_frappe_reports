@@ -11,6 +11,7 @@ from frappe.utils import add_months, getdate, today
 from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_build_bulk_statement_doc,
 	_build_statement_doc,
+	_company_customers,
 	_resolve_recipients,
 	email_statement,
 	get_default_recipient,
@@ -22,6 +23,9 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 TEST_COMPANY = "_Test Company"
 TEST_CUSTOMER = "_Test Customer"
 OTHER_CUSTOMER = "_Test Customer 1"
+# A second company (different currency, different accounts) used only to prove GL-entry scoping
+# actually excludes customers whose transactions belong elsewhere.
+OTHER_COMPANY = "_Test Company 2"
 
 @functools.cache
 def pdf_generation_works():
@@ -82,6 +86,24 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		doc.update(overrides)
 		doc.insert(ignore_permissions=True)
 		return doc
+
+	def _make_other_company_invoice(self, customer, rate=500):
+		"""A submitted invoice against OTHER_COMPANY, whose currency and accounts differ from
+		TEST_COMPANY. Exists purely to prove GL-entry scoping excludes a customer whose ledger
+		activity belongs to a different company."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		return create_sales_invoice(
+			customer=customer,
+			company=OTHER_COMPANY,
+			debit_to="Debtors - _TC2",
+			income_account="Sales - _TC2",
+			expense_account="Cost of Goods Sold - _TC2",
+			cost_center="Main - _TC2",
+			warehouse="Stores - _TC2",
+			currency="EUR",
+			rate=rate,
+		)
 
 	# ── doc construction ─────────────────────────────────────────────────────
 
@@ -156,8 +178,13 @@ class TestStatementOfAccounts(IntegrationTestCase):
 	# ── bulk preview ─────────────────────────────────────────────────────────
 
 	def test_bulk_doc_widens_to_every_enabled_customer_and_is_never_persisted(self):
-		"""The bulk clone must reach every enabled customer, not just the template's own two, and
-		must stay in memory the exact same way the single-customer clone does."""
+		"""The bulk clone must reach every customer with GL activity against the company, not just
+		the template's own two, and must stay in memory the exact same way the single-customer
+		clone does."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
 		tpl = self._make_template()
 		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
 
@@ -176,20 +203,79 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 	def test_bulk_doc_applies_the_same_template_company_guard(self):
 		"""Reuses _build_statement_doc, so a template belonging to another company must still throw
-		even though the bulk path never receives an explicit customer from the caller."""
+		even though the bulk path never receives an explicit customer from the caller. Giving
+		OTHER_COMPANY a transacting customer keeps _company_customers non-empty, so it is genuinely
+		the company guard that fires here, not the empty-customer-list branch."""
 		tpl = self._make_template()
+		self._make_other_company_invoice(OTHER_CUSTOMER)
 
 		with self.assertRaises(frappe.ValidationError):
-			_build_bulk_statement_doc("_Test Company 2", tpl.name, today())
+			_build_bulk_statement_doc(OTHER_COMPANY, tpl.name, today())
 
-	def test_preview_bulk_statements_returns_expected_keys(self):
+	def test_company_customers_excludes_customers_of_another_company(self):
+		"""Pins the round-1 fix: _company_customers must scope through GL Entry rather than
+		returning every enabled Customer on the site, since Customer itself has no company field."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		self._make_other_company_invoice(OTHER_CUSTOMER)
+
+		names = [c.name for c in _company_customers(TEST_COMPANY)]
+
+		self.assertIn(TEST_CUSTOMER, names)
+		self.assertNotIn(OTHER_CUSTOMER, names)
+
+	def test_preview_bulk_statements_returns_expected_keys_and_reconciles(self):
+		"""The four buckets (will_send, no_email, not_permitted, no_transactions) must always add
+		up to total_customers: not_permitted counts rather than silently drops, so nothing goes
+		missing from the totals the user actually sees."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		tpl = self._make_template()
 
 		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
-		self.assertIn("will_send", result)
-		self.assertIn("no_email", result)
-		self.assertIn("no_transactions", result)
+		for key in ("will_send", "no_email", "not_permitted", "no_transactions", "total_customers"):
+			self.assertIn(key, result)
+
+		reconciled = (
+			len(result["will_send"])
+			+ len(result["no_email"])
+			+ result["not_permitted"]
+			+ result["no_transactions"]
+		)
+		self.assertEqual(reconciled, result["total_customers"])
+
+	def test_permission_error_for_one_customer_does_not_abort_the_preview(self):
+		"""_resolve_recipients checks Customer read per customer (get_customer_emails calls
+		frappe.has_permission(..., throw=True)); the seed check in _build_statement_doc only
+		covers the first customer, so this per-customer check is what actually protects a
+		restricted user. It must be caught and counted, not left to blow up the whole preview."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+
+		def side_effect(customer):
+			if customer == OTHER_CUSTOMER:
+				raise frappe.PermissionError
+			return ["primary@example.com"]
+
+		with patch(
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+			side_effect=side_effect,
+		):
+			result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(result["not_permitted"], 1)
+		will_send_names = [row["customer"] for row in result["will_send"]]
+		no_email_names = [row["customer"] for row in result["no_email"]]
+		self.assertIn(TEST_CUSTOMER, will_send_names)
+		self.assertNotIn(OTHER_CUSTOMER, will_send_names)
+		self.assertNotIn(OTHER_CUSTOMER, no_email_names)
 
 	def test_customer_with_transactions_but_no_email_lands_in_no_email_not_will_send(self):
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
@@ -207,6 +293,12 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertNotIn(OTHER_CUSTOMER, will_send_names)
 
 	def test_customer_with_no_transactions_appears_in_neither_list(self):
+		"""A customer with zero GL activity anywhere is excluded at the _company_customers layer
+		before get_statement_dict is ever consulted; a transacting customer is added so the bulk
+		doc still builds. Either way, the quiet customer must never surface in the results."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		quiet = frappe.new_doc("Customer")
 		quiet.customer_name = f"SOA Quiet Bulk Customer {frappe.generate_hash(length=6)}"
 		quiet.insert(ignore_permissions=True)
