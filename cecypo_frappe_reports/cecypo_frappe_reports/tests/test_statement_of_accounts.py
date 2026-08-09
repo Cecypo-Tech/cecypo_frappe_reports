@@ -12,9 +12,9 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_build_bulk_statement_doc,
 	_build_statement_doc,
 	_company_customers,
+	_customers_with_any_email,
 	_narrow_statement_doc,
 	_resolve_recipients,
-	_send_bulk_statements,
 	_send_statement_batch,
 	email_bulk_statements,
 	email_statement,
@@ -232,76 +232,81 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertNotIn(OTHER_CUSTOMER, names)
 
 	def test_preview_bulk_statements_returns_expected_keys_and_reconciles(self):
-		"""The four buckets (will_send, no_email, not_permitted, no_transactions) must always add
-		up to total_customers: not_permitted counts rather than silently drops, so nothing goes
-		missing from the totals the user actually sees."""
+		"""with_email + without_email + not_permitted must always add up to in_scope: not_permitted
+		counts rather than silently drops, so nothing goes missing from the totals the user sees."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		tpl = self._make_template()
+		as_of = today()
 
-		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+		result = preview_bulk_statements(TEST_COMPANY, tpl.name, as_of)
 
-		for key in ("will_send", "no_email", "not_permitted", "no_transactions", "total_customers"):
+		for key in (
+			"in_scope",
+			"with_email",
+			"without_email",
+			"not_permitted",
+			"template",
+			"as_of_date",
+		):
 			self.assertIn(key, result)
 
-		reconciled = (
-			len(result["will_send"])
-			+ len(result["no_email"])
-			+ result["not_permitted"]
-			+ result["no_transactions"]
-		)
-		self.assertEqual(reconciled, result["total_customers"])
+		reconciled = result["with_email"] + len(result["without_email"]) + result["not_permitted"]
+		self.assertEqual(reconciled, result["in_scope"])
+		self.assertEqual(result["template"], tpl.name)
+		self.assertEqual(result["as_of_date"], str(getdate(as_of)))
 
-	def test_permission_error_for_one_customer_does_not_abort_the_preview(self):
-		"""_resolve_recipients checks Customer read per customer (get_customer_emails calls
-		frappe.has_permission(..., throw=True)); the seed check in _build_statement_doc only
-		covers the first customer, so this per-customer check is what actually protects a
-		restricted user. It must be caught and counted, not left to blow up the whole preview."""
+	def test_unreadable_customer_is_counted_as_not_permitted_and_never_named(self):
+		"""has_permission is checked per customer before the bulk email query runs, so a user with
+		restricted customer visibility must not have their whole preview die on one customer they
+		cannot see, and that customer must never appear by name in without_email either."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "customer_primary_contact", None)
 		tpl = self._make_template()
+		real_has_permission = frappe.has_permission
 
-		def side_effect(customer):
-			if customer == OTHER_CUSTOMER:
-				raise frappe.PermissionError
-			return ["primary@example.com"]
+		def side_effect(*args, **kwargs):
+			doctype = args[0] if args else kwargs.get("doctype")
+			doc = args[2] if len(args) > 2 else kwargs.get("doc")
+			if doctype == "Customer" and doc == OTHER_CUSTOMER:
+				return False
+			return real_has_permission(*args, **kwargs)
 
-		with patch(
-			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
-			side_effect=side_effect,
-		):
+		with patch("frappe.has_permission", side_effect=side_effect):
 			result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
 		self.assertEqual(result["not_permitted"], 1)
-		will_send_names = [row["customer"] for row in result["will_send"]]
-		no_email_names = [row["customer"] for row in result["no_email"]]
-		self.assertIn(TEST_CUSTOMER, will_send_names)
-		self.assertNotIn(OTHER_CUSTOMER, will_send_names)
-		self.assertNotIn(OTHER_CUSTOMER, no_email_names)
+		self.assertIsInstance(result["not_permitted"], int)
+		without_email_names = [row["customer"] for row in result["without_email"]]
+		self.assertIn(TEST_CUSTOMER, without_email_names)
+		self.assertNotIn(OTHER_CUSTOMER, without_email_names)
 
-	def test_customer_with_transactions_but_no_email_lands_in_no_email_not_will_send(self):
+	def test_customer_with_transactions_but_no_email_lands_in_without_email(self):
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
 		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
 		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		create_sales_invoice(customer=OTHER_CUSTOMER, rate=500)
 		tpl = self._make_template()
 
 		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
-		no_email_names = [row["customer"] for row in result["no_email"]]
-		will_send_names = [row["customer"] for row in result["will_send"]]
-		self.assertIn(OTHER_CUSTOMER, no_email_names)
-		self.assertNotIn(OTHER_CUSTOMER, will_send_names)
+		without_email_names = [row["customer"] for row in result["without_email"]]
+		self.assertIn(OTHER_CUSTOMER, without_email_names)
+		self.assertNotIn(TEST_CUSTOMER, without_email_names)
+		self.assertEqual(result["with_email"], 1)
 
-	def test_customer_with_no_transactions_appears_in_neither_list(self):
-		"""A customer with zero GL activity anywhere is excluded at the _company_customers layer
-		before get_statement_dict is ever consulted; a transacting customer is added so the bulk
-		doc still builds. Either way, the quiet customer must never surface in the results."""
+	def test_customer_with_no_transactions_appears_in_neither_bucket(self):
+		"""A customer with zero GL activity anywhere is excluded at the _company_customers layer;
+		a transacting customer is added so the bulk preview still has something in scope. Either
+		way, the quiet customer must never surface in the results or be counted in in_scope."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
@@ -312,10 +317,9 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
-		will_send_names = [row["customer"] for row in result["will_send"]]
-		no_email_names = [row["customer"] for row in result["no_email"]]
-		self.assertNotIn(quiet.name, will_send_names)
-		self.assertNotIn(quiet.name, no_email_names)
+		without_email_names = [row["customer"] for row in result["without_email"]]
+		self.assertNotIn(quiet.name, without_email_names)
+		self.assertEqual(result["in_scope"], len(_company_customers(TEST_COMPANY)))
 
 	def test_bulk_doc_seeds_with_a_readable_customer_when_the_first_is_unpermitted(self):
 		"""Regression: frappe.get_all does not check permissions, so _company_customers()[0] can be
@@ -361,22 +365,132 @@ class TestStatementOfAccounts(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				_build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
 
-	def test_preview_bulk_statements_never_generates_a_pdf(self):
-		"""Pins invariant 2: the preview answers who has transactions from get_statement_dict's HTML
-		and must never fall through to get_report_pdf, even when the toolchain is broken."""
+	def test_preview_bulk_statements_runs_no_report_pass(self):
+		"""The whole point of this task: the preview must not run a full report render per
+		customer to learn who has transactions. get_statement_dict is patched to raise, so any
+		regression that reintroduces the render pass fails this test immediately instead of only
+		showing up as a slow endpoint at a few hundred customers."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
 		tpl = self._make_template()
 
 		with patch(
-			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_report_pdf"
-		) as mock_pdf:
-			mock_pdf.side_effect = AssertionError("preview must not render a PDF")
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_statement_dict",
+			side_effect=AssertionError("preview must not run a report render"),
+		):
 			result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
-		mock_pdf.assert_not_called()
-		self.assertIn("will_send", result)
+		self.assertIn("in_scope", result)
+		self.assertGreaterEqual(result["in_scope"], 1)
+
+	def test_preview_bulk_statements_in_scope_equals_gl_active_customer_count(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+
+		result = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(result["in_scope"], len(_company_customers(TEST_COMPANY)))
+
+	# ── _customers_with_any_email ───────────────────────────────────────────────
+
+	def test_customers_with_any_email_checks_all_three_sources(self):
+		"""_customers_with_any_email must find an address through every source
+		_resolve_recipients does: the Customer's own email_id, a billing Contact's email, and the
+		customer_primary_contact's Contact email. One customer per source, plus one with nothing
+		on file."""
+		via_own_email_id = TEST_CUSTOMER
+		frappe.db.set_value("Customer", via_own_email_id, "email_id", "primary@example.com")
+
+		via_billing_contact = OTHER_CUSTOMER
+		frappe.db.set_value("Customer", via_billing_contact, "email_id", None)
+		frappe.db.set_value("Customer", via_billing_contact, "customer_primary_contact", None)
+		contact = frappe.new_doc("Contact")
+		contact.first_name = "Billing Contact for SOA Test"
+		contact.is_billing_contact = 1
+		contact.append("email_ids", {"email_id": "billing@example.com", "is_primary": 1})
+		contact.append("links", {"link_doctype": "Customer", "link_name": via_billing_contact})
+		contact.insert(ignore_permissions=True)
+
+		via_primary_contact = frappe.new_doc("Customer")
+		via_primary_contact.customer_name = f"SOA Primary Contact Cust {frappe.generate_hash(length=6)}"
+		via_primary_contact.insert(ignore_permissions=True)
+		primary_contact = frappe.new_doc("Contact")
+		primary_contact.first_name = "Primary Contact for SOA Test"
+		primary_contact.append("email_ids", {"email_id": "primary-contact@example.com", "is_primary": 1})
+		primary_contact.append("links", {"link_doctype": "Customer", "link_name": via_primary_contact.name})
+		primary_contact.insert(ignore_permissions=True)
+		frappe.db.set_value(
+			"Customer", via_primary_contact.name, "customer_primary_contact", primary_contact.name
+		)
+
+		no_address = frappe.new_doc("Customer")
+		no_address.customer_name = f"SOA No Address Cust {frappe.generate_hash(length=6)}"
+		no_address.insert(ignore_permissions=True)
+
+		names = [via_own_email_id, via_billing_contact, via_primary_contact.name, no_address.name]
+
+		found = _customers_with_any_email(names)
+
+		self.assertIn(via_own_email_id, found)
+		self.assertIn(via_billing_contact, found)
+		self.assertIn(via_primary_contact.name, found)
+		self.assertNotIn(no_address.name, found)
+
+	def test_customers_with_any_email_ignores_a_merely_linked_non_billing_contact(self):
+		"""Regression pin for the divergence the site-wide pinning test caught: a Contact linked
+		to the customer via Dynamic Link but neither the billing contact nor the
+		customer_primary_contact must NOT count as an address here, because
+		_resolve_recipients (via get_customer_emails' is_billing_contact=1 filter) would not find
+		it either. An earlier version of this query joined Dynamic Link -> Contact Email for ANY
+		linked contact and wrongly said "has email" for exactly this shape of real site data."""
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
+		contact = frappe.new_doc("Contact")
+		contact.first_name = "Merely Linked Contact for SOA Test"
+		contact.is_billing_contact = 0
+		contact.append("email_ids", {"email_id": "not-billing@example.com", "is_primary": 1})
+		contact.append("links", {"link_doctype": "Customer", "link_name": OTHER_CUSTOMER})
+		contact.insert(ignore_permissions=True)
+
+		found = _customers_with_any_email([OTHER_CUSTOMER])
+
+		self.assertNotIn(OTHER_CUSTOMER, found)
+		self.assertEqual(_resolve_recipients(OTHER_CUSTOMER), [])
+
+	def test_customers_with_any_email_empty_input_returns_empty_set(self):
+		self.assertEqual(_customers_with_any_email([]), set())
+
+	def test_customers_with_any_email_pins_against_resolve_recipients_on_real_site_data(self):
+		"""THE PINNING TEST. _customers_with_any_email is a second implementation of "does this
+		customer have an address", alongside _resolve_recipients. That duplication is exactly the
+		pattern that silently diverges, and it is accepted only because this test holds the two
+		together: for every enabled customer actually on the site, whether the bulk query finds
+		them must agree with whether the live per-customer lookup would. Iterates real site data
+		rather than a handful of fixtures, since a fixture set cannot catch a divergence introduced
+		by a real data shape nobody thought to construct by hand. If this fails, that is a finding
+		about the query, not a reason to weaken the assertion."""
+		customer_names = frappe.get_all("Customer", filters={"disabled": 0}, pluck="name")
+		self.assertTrue(customer_names, "no enabled customers on this site to pin against")
+
+		bulk_found = _customers_with_any_email(customer_names)
+
+		mismatches = []
+		for name in customer_names:
+			bulk_says_has_email = name in bulk_found
+			live_says_has_email = bool(_resolve_recipients(name))
+			if bulk_says_has_email != live_says_has_email:
+				mismatches.append((name, bulk_says_has_email, live_says_has_email))
+
+		self.assertEqual(
+			mismatches,
+			[],
+			f"_customers_with_any_email disagrees with _resolve_recipients for: {mismatches}",
+		)
 
 	# ── bulk send ────────────────────────────────────────────────────────────
 
@@ -395,187 +509,44 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		mock_enqueue.assert_called_once()
 		mock_sendmail.assert_not_called()
 
-	def test_email_bulk_statements_enqueue_is_deduplicated_by_job_id(self):
-		"""Regression: the whole expensive pass runs before frappe.enqueue, so a proxy or gunicorn
-		timeout can show the browser a failure while the job still lands; a retry must not mail
-		everyone twice. frappe.enqueue's own deduplicate=True + job_id refuses to re-queue a job
-		with a matching id that is already queued or running, so pin that both are actually
-		passed and that the id is keyed on the inputs that define the run."""
+	def test_email_bulk_statements_delegates_to_the_chunker_with_every_company_customer(self):
+		"""The endpoint no longer pre-computes who is eligible (that decision is now the batch
+		worker's, per batch); it must hand every GL-active customer of the company to
+		enqueue_statement_batches and let the chunker do the enqueuing, including its own
+		per-batch job_id/deduplicate dedup (covered separately by
+		test_enqueue_statement_batches_job_ids_are_distinct_and_deduplicated)."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
 		tpl = self._make_template()
 		as_of = today()
 
-		with patch("frappe.enqueue") as mock_enqueue:
-			email_bulk_statements(TEST_COMPANY, tpl.name, as_of)
+		with patch(
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.enqueue_statement_batches",
+			return_value=1,
+		) as mock_chunker:
+			result = email_bulk_statements(TEST_COMPANY, tpl.name, as_of)
 
-		kwargs = mock_enqueue.call_args.kwargs
-		self.assertTrue(kwargs.get("deduplicate"))
-		self.assertIn("job_id", kwargs)
-		self.assertIn(TEST_COMPANY, kwargs["job_id"])
-		self.assertIn(tpl.name, kwargs["job_id"])
-		self.assertIn(str(as_of), kwargs["job_id"])
+		mock_chunker.assert_called_once()
+		args, kwargs = mock_chunker.call_args
+		self.assertEqual(args[0], tpl.name)
+		sent_customers = sorted(row["customer"] for row in args[1])
+		self.assertEqual(sent_customers, sorted(c.name for c in _company_customers(TEST_COMPANY)))
+		self.assertEqual(kwargs.get("as_of_date"), as_of)
+		self.assertEqual(result, {"batches": 1})
 
-	def test_email_bulk_statements_throws_and_does_not_enqueue_when_nobody_eligible(self):
-		"""Pins one of the two guards the plan's self-review calls out as mattering most: when no
-		customer has both transactions and an address, the endpoint must throw rather than
-		silently queue a job for zero recipients. Deliberately leaves the one transacting
-		customer without any resolvable address, so preview's will_send is empty while
-		total_customers is not."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", None)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "customer_primary_contact", None)
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		tpl = self._make_template()
-
-		with patch("frappe.enqueue") as mock_enqueue:
+	def test_email_bulk_statements_throws_and_does_not_enqueue_when_company_has_no_customers(self):
+		"""The only remaining guard: an address-less or transaction-less customer is no longer
+		grounds to throw (the batch worker skips them correctly, per batch), but a company with
+		zero GL-active customers must still throw rather than enqueue an empty run."""
+		with patch(
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.enqueue_statement_batches"
+		) as mock_chunker:
 			with self.assertRaises(frappe.ValidationError):
-				email_bulk_statements(TEST_COMPANY, tpl.name, today())
+				email_bulk_statements(OTHER_COMPANY, "__nonexistent__", today())
 
-		mock_enqueue.assert_not_called()
-
-	def test_email_bulk_statements_queued_count_matches_preview_will_send(self):
-		"""The toast the user sees must never disagree with the preview: both are read from the
-		same preview_bulk_statements call, not two independent counts that could drift apart."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
-		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
-		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
-		tpl = self._make_template()
-
-		preview = preview_bulk_statements(TEST_COMPANY, tpl.name, today())
-		with patch("frappe.enqueue"):
-			result = email_bulk_statements(TEST_COMPANY, tpl.name, today())
-
-		self.assertEqual(result["queued"], len(preview["will_send"]))
-
-	def test_send_bulk_statements_skips_customer_with_no_recipient_without_aborting(self):
-		"""One customer with no resolvable address must cost only that customer, not the run."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		tpl = self._make_template()
-
-		def side_effect(customer):
-			return [] if customer == OTHER_CUSTOMER else ["primary@example.com"]
-
-		with (
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
-				side_effect=side_effect,
-			),
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
-				return_value=b"%PDF-fake",
-			),
-			patch("frappe.sendmail") as mock_sendmail,
-		):
-			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
-
-		mock_sendmail.assert_called_once()
-		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
-
-	def test_send_bulk_statements_logs_and_skips_a_render_failure_without_aborting_the_run(self):
-		"""Pins the reason get_report_pdf is not used: get_statement_dict runs once for every
-		customer, but get_pdf is called per customer inside the try, so a render failure for one
-		customer costs only that customer. Patching the module's own `get_pdf` (rather than
-		get_report_pdf) means this test would fail to catch a regression that "simplifies" the
-		implementation back to a single get_report_pdf(doc, consolidated=False) call, since that
-		call renders every customer in one uninterruptible pass before this handler ever runs."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "good@example.com")
-		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", "bad@example.com")
-		tpl = self._make_template()
-
-		def failing_get_pdf(html, options=None):
-			if OTHER_CUSTOMER in html:
-				raise Exception("simulated render failure")
-			return b"%PDF-fake"
-
-		with (
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
-				side_effect=failing_get_pdf,
-			),
-			patch("frappe.sendmail") as mock_sendmail,
-			patch("frappe.log_error") as mock_log_error,
-		):
-			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
-
-		mock_sendmail.assert_called_once()
-		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
-		mock_log_error.assert_called_once()
-		self.assertIn(OTHER_CUSTOMER, mock_log_error.call_args.kwargs["message"])
-
-	def test_send_bulk_statements_permission_error_costs_one_customer_not_the_run(self):
-		"""_resolve_recipients raising frappe.PermissionError sits inside the same try as the
-		render and send, so a permission gap for one customer must not abort the others. It is
-		caught separately from the generic Exception handler and must NOT be logged: it is the
-		expected, already-counted-in-the-preview case for a restricted user, and logging it under
-		the failure title would bury genuine failures in the one channel where they must be
-		found."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		tpl = self._make_template()
-
-		def side_effect(customer):
-			if customer == OTHER_CUSTOMER:
-				raise frappe.PermissionError
-			return ["primary@example.com"]
-
-		with (
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
-				side_effect=side_effect,
-			),
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
-				return_value=b"%PDF-fake",
-			),
-			patch("frappe.sendmail") as mock_sendmail,
-			patch("frappe.log_error") as mock_log_error,
-		):
-			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
-
-		mock_sendmail.assert_called_once()
-		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
-		mock_log_error.assert_not_called()
-
-	def test_send_bulk_statements_never_saves_the_doc(self):
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
-		tpl = self._make_template()
-		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
-
-		with (
-			patch(
-				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
-				return_value=b"%PDF-fake",
-			),
-			patch("frappe.sendmail"),
-		):
-			_send_bulk_statements(TEST_COMPANY, tpl.name, today())
-
-		self.assertEqual(
-			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
-		)
-		self.assertEqual(
-			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
-		)
+		mock_chunker.assert_not_called()
 
 	def test_email_bulk_statements_never_saves_the_doc(self):
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
@@ -670,6 +641,40 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		job_ids = [call.kwargs["job_id"] for call in mock_enqueue.call_args_list]
 		self.assertEqual(len(job_ids), len(set(job_ids)))
 		self.assertTrue(all(call.kwargs["deduplicate"] for call in mock_enqueue.call_args_list))
+
+	def test_send_statement_batch_skips_customer_with_no_recipient_without_aborting(self):
+		"""Ported from the deleted _send_bulk_statements' equivalent test: one customer with no
+		resolvable address (an empty list, not a PermissionError) must cost only that customer,
+		not the batch. Distinct from the PermissionError case covered by
+		test_send_statement_batch_permission_error_is_skipped_without_being_logged."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+		rows = [
+			{"customer": TEST_CUSTOMER, "customer_name": "x"},
+			{"customer": OTHER_CUSTOMER, "customer_name": "y"},
+		]
+
+		def side_effect(customer):
+			return [] if customer == OTHER_CUSTOMER else ["primary@example.com"]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				side_effect=side_effect,
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
 
 	def test_send_statement_batch_uses_get_recipients_and_cc_when_row_carries_an_email(self):
 		"""A saved PSOA record's rows carry billing_email/primary_email from fetch_customers; that

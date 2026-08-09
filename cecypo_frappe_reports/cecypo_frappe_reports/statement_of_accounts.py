@@ -212,66 +212,6 @@ def _resolve_recipients(customer):
 	return []
 
 
-def _send_bulk_statements(company, template, as_of_date=None, user=None):
-	"""Render and send one statement per customer with transactions.
-
-	Runs in a background job: rendering N statements inside a web request would time out, and
-	the failure mode is a half-finished send with no record of where it stopped.
-
-	One customer must never abort the run, so a render or send failure is logged and skipped.
-	The POS shows only a queued toast, so this log is the only place a failure can be found.
-	"""
-	if user:
-		frappe.set_user(user)
-
-	doc = _build_bulk_statement_doc(company, template, as_of_date)
-
-	# get_report_pdf is deliberately NOT used here. It renders every customer in one pass, so a
-	# render failure on customer 3 aborts customers 4..N before any per-customer handler sees it
-	# — the exact failure this loop exists to prevent. Splitting it keeps the one expensive part
-	# (the AR/GL query, via get_statement_dict) as a single pass while making each PDF render
-	# individually survivable.
-	statements = get_statement_dict(doc) or {}
-
-	for entry in doc.customers:
-		statement_html = statements.get(entry.customer)
-		if not statement_html:
-			continue
-
-		try:
-			# Inside the try: _resolve_recipients raises PermissionError per customer, and
-			# get_pdf can throw on a broken image or a wkhtmltopdf failure. Either must cost
-			# one customer, not the run.
-			recipients = _resolve_recipients(entry.customer)
-			if not recipients:
-				continue
-
-			pdf = get_pdf(statement_html, {"orientation": doc.orientation})
-			context = get_context(entry.customer, doc)
-			frappe.sendmail(
-				recipients=recipients,
-				subject=_render_or(doc.subject, context, _("Statement of Accounts")),
-				message=_render_or(
-					doc.body, context, _("Please find your Statement of Accounts attached.")
-				),
-				attachments=[
-					{"fname": _statement_filename(doc, entry.customer), "fcontent": pdf}
-				],
-				reference_doctype="Customer",
-				reference_name=entry.customer,
-				now=False,
-			)
-		except frappe.PermissionError:
-			# Expected for a restricted user; the preview already counted them. Not an error,
-			# and logging it under the failure title would bury real failures.
-			continue
-		except Exception:
-			frappe.log_error(
-				title="Bulk Statement of Accounts: send failed",
-				message=f"{entry.customer}\n\n{frappe.get_traceback()}",
-			)
-
-
 STATEMENT_BATCH_SIZE = 50
 
 
@@ -465,73 +405,118 @@ def render_statement_html(customer, company, template, as_of_date=None):
 	return _render_html(_build_statement_doc(customer, company, template, as_of_date))
 
 
+def _customers_with_any_email(customer_names):
+	"""Customers with an address in any of the places _resolve_recipients looks.
+
+	Three bulk queries rather than a call per customer: _resolve_recipients costs ~0.03s each
+	because get_customer_emails runs a permission check every time, which is 59s at 2000
+	customers inside an HTTP request.
+
+	Each query below mirrors one branch of _resolve_recipients exactly, rather than merely being
+	loosely broader. An earlier version joined Dynamic Link -> Contact Email for ANY contact
+	linked to the customer, which is looser than _resolve_recipients' actual billing-contact-only
+	source (get_customer_emails filters on Contact.is_billing_contact=1) — the site's pinning
+	test caught it diverging on real data: a customer with only a non-billing linked contact was
+	marked "has email" here while _resolve_recipients found nothing and the send would have
+	skipped them. Matching the sources 1:1 is what keeps "no address" here always safe.
+	"""
+	if not customer_names:
+		return set()
+
+	found = set(
+		frappe.get_all(
+			"Customer",
+			filters={"name": ["in", customer_names], "email_id": ["!=", ""]},
+			pluck="name",
+		)
+	)
+
+	# Billing contact's email — mirrors get_customer_emails(billing_and_primary=False), the
+	# first source _resolve_recipients checks.
+	billing = frappe.db.sql(
+		"""
+		SELECT DISTINCT dl.link_name
+		FROM `tabDynamic Link` dl
+		JOIN `tabContact` c ON c.name = dl.parent
+		JOIN `tabContact Email` ce ON ce.parent = dl.parent
+		WHERE dl.link_doctype = 'Customer'
+		  AND dl.parenttype = 'Contact'
+		  AND dl.link_name IN %(names)s
+		  AND c.is_billing_contact = 1
+		  AND IFNULL(ce.email_id, '') != ''
+		""",
+		{"names": tuple(customer_names)},
+	)
+	found.update(row[0] for row in billing)
+
+	# customer_primary_contact's own email_id field — _resolve_recipients' third fallback.
+	primary_contact = frappe.db.sql(
+		"""
+		SELECT cust.name
+		FROM `tabCustomer` cust
+		JOIN `tabContact` pc ON pc.name = cust.customer_primary_contact
+		WHERE cust.name IN %(names)s
+		  AND IFNULL(pc.email_id, '') != ''
+		""",
+		{"names": tuple(customer_names)},
+	)
+	found.update(row[0] for row in primary_contact)
+	return found
+
+
 @frappe.whitelist()
 def preview_bulk_statements(company, template, as_of_date=None):
-	"""Who would receive a statement, without sending or rendering a single PDF.
+	"""What a bulk send would do, without rendering anything.
 
-	get_statement_dict returns HTML per customer and omits anyone with no rows, so it answers
-	"who has transactions" without invoking wkhtmltopdf.
+	Deliberately does NOT determine who has transactions. That costs a full report render per
+	customer, and the send decides it again per batch anyway — so pre-computing it bought
+	nothing and cost 199s at 2000 customers. What this does answer is what protects against a
+	mis-click: how many customers are in scope, how many have nowhere to send, and which.
 	"""
-	doc = _build_bulk_statement_doc(company, template, as_of_date)
-	statements = get_statement_dict(doc) or {}
+	# Validates the template, its company, and read permission — without building a doc.
+	if not frappe.db.exists(PSOA, template):
+		frappe.throw(_("Statement template {0} does not exist").format(frappe.bold(template)))
+	tpl = frappe.get_doc(PSOA, template)
+	tpl.check_permission("read")
+	if tpl.company != company:
+		frappe.throw(
+			_("Statement template {0} belongs to {1}, not {2}").format(
+				frappe.bold(template), frappe.bold(tpl.company), frappe.bold(company)
+			)
+		)
 
-	will_send = []
-	no_email = []
-	not_permitted = 0
-	for entry in doc.customers:
-		if entry.customer not in statements:
-			continue
-
-		try:
-			recipients = _resolve_recipients(entry.customer)
-		except frappe.PermissionError:
-			# _resolve_recipients checks Customer read per customer. A user with restricted
-			# customer visibility must not have their whole preview die on one customer they
-			# cannot see — count them and move on. Counted rather than silently dropped so the
-			# totals still reconcile, and never named, so nothing leaks.
-			not_permitted += 1
-			continue
-
-		row = {"customer": entry.customer, "customer_name": entry.customer_name}
-		if recipients:
-			row["recipient"] = recipients[0]
-			will_send.append(row)
-		else:
-			no_email.append(row)
+	customers = _company_customers(company)
+	readable = [c for c in customers if frappe.has_permission("Customer", "read", c.name)]
+	names = [c.name for c in readable]
+	with_email = _customers_with_any_email(names)
 
 	return {
-		"will_send": will_send,
-		"no_email": no_email,
-		"not_permitted": not_permitted,
-		"no_transactions": len(doc.customers) - len(statements),
-		"total_customers": len(doc.customers),
+		"in_scope": len(customers),
+		"with_email": len(with_email),
+		"without_email": [
+			{"customer": c.name, "customer_name": c.customer_name}
+			for c in readable
+			if c.name not in with_email
+		],
+		"not_permitted": len(customers) - len(readable),
+		"template": template,
+		"as_of_date": str(getdate(as_of_date)) if as_of_date else None,
 	}
 
 
 @frappe.whitelist()
 def email_bulk_statements(company, template, as_of_date=None):
-	"""Queue a statement for every customer of `company` who has transactions."""
-	preview = preview_bulk_statements(company, template, as_of_date)
-	queued = len(preview["will_send"])
-	if not queued:
-		frappe.throw(_("No customer has both transactions and an email address on file."))
+	"""Queue a statement for every customer of `company` who has transactions.
 
-	frappe.enqueue(
-		"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._send_bulk_statements",
-		queue="long",
-		timeout=1800,
-		# A retry after a lost or timed-out response must not mail everyone twice. The id is
-		# keyed on exactly the inputs that define the run, so re-sending the same statement set
-		# is a no-op while it is in flight, while a genuinely different date or template still
-		# queues.
-		job_id=f"bulk-soa::{company}::{template}::{as_of_date or today()}",
-		deduplicate=True,
-		company=company,
-		template=template,
-		as_of_date=as_of_date,
-		user=frappe.session.user,
-	)
-	return {"queued": queued}
+	Who actually receives one is decided per batch in the worker, which skips anyone with no
+	rows and anyone with no address. Nothing here pre-computes that.
+	"""
+	customers = _company_customers(company)
+	if not customers:
+		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))
+
+	rows = [{"customer": c.name, "customer_name": c.customer_name} for c in customers]
+	return {"batches": enqueue_statement_batches(template, rows, as_of_date=as_of_date)}
 
 
 @frappe.whitelist()
