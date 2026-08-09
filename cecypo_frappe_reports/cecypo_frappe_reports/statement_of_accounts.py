@@ -34,6 +34,31 @@ PSOA = "Process Statement Of Accounts"
 # ── Core ─────────────────────────────────────────────────────────────────────
 
 
+def _assert_template_usable(template, company):
+	"""The template exists, the caller may read it, and it belongs to `company`.
+
+	Extracted out of `_build_statement_doc` because it now guards three entry points
+	(`_build_statement_doc`, `preview_bulk_statements`, `email_bulk_statements`), and because the
+	company check is what stops one company's letterhead and accounts rendering another company's
+	statement — a duplicated copy of that check is exactly the kind of thing that drifts. The
+	dialog/manifest already filter by company, but no caller here can trust its client for this.
+	"""
+	if not template:
+		frappe.throw(_("Statement template is required"))
+	if not frappe.db.exists(PSOA, template):
+		frappe.throw(_("Statement template {0} does not exist").format(frappe.bold(template)))
+
+	tpl = frappe.get_doc(PSOA, template)
+	tpl.check_permission("read")
+	if tpl.company != company:
+		frappe.throw(
+			_("Statement template {0} belongs to {1}, not {2}").format(
+				frappe.bold(template), frappe.bold(tpl.company), frappe.bold(company)
+			)
+		)
+	return tpl
+
+
 def _build_statement_doc(customer, company, template, as_of_date=None):
 	"""Clone `template` in memory, narrowed to `customer`, dated `as_of_date`.
 
@@ -44,25 +69,10 @@ def _build_statement_doc(customer, company, template, as_of_date=None):
 		frappe.throw(_("Customer is required"))
 	if not company:
 		frappe.throw(_("Company is required"))
-	if not template:
-		frappe.throw(_("Statement template is required"))
 
 	frappe.has_permission("Customer", "read", customer, throw=True)
 
-	if not frappe.db.exists(PSOA, template):
-		frappe.throw(_("Statement template {0} does not exist").format(frappe.bold(template)))
-
-	tpl = frappe.get_doc(PSOA, template)
-	tpl.check_permission("read")
-
-	# The dialog filters the dropdown by company, but the endpoint cannot trust its client: a
-	# mismatched template would silently apply another company's letterhead and accounts.
-	if tpl.company != company:
-		frappe.throw(
-			_("Statement template {0} belongs to {1}, not {2}").format(
-				frappe.bold(template), frappe.bold(tpl.company), frappe.bold(company)
-			)
-		)
+	tpl = _assert_template_usable(template, company)
 
 	doc = frappe.copy_doc(tpl)
 	doc.customers = []
@@ -114,35 +124,6 @@ def _company_customers(company):
 		fields=["name", "customer_name"],
 		order_by="customer_name asc",
 	)
-
-
-def _build_bulk_statement_doc(company, template, as_of_date=None):
-	"""The single-customer clone, widened to every customer of the company.
-
-	Reuses _build_statement_doc so the permission checks, the template-company guard and the
-	report-type date mapping cannot drift between the single and bulk paths. Never saved.
-	"""
-	customers = _company_customers(company)
-	if not customers:
-		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))
-
-	# frappe.get_all does not check permissions, so customers[0] is whoever sorts first, not
-	# someone this user may read. Seeding _build_statement_doc with an unreadable customer makes
-	# its has_permission check throw and takes the whole preview or run down with it.
-	seed = next(
-		(c.name for c in customers if frappe.has_permission("Customer", "read", c.name)), None
-	)
-	if not seed:
-		frappe.throw(_("You are not permitted to view any customer for {0}.").format(frappe.bold(company)))
-
-	# Seed with a readable customer so the shared builder runs its checks, then widen.
-	doc = _build_statement_doc(seed, company, template, as_of_date)
-	doc.customers = []
-	for customer in customers:
-		doc.append(
-			"customers", {"customer": customer.name, "customer_name": customer.customer_name}
-		)
-	return doc
 
 
 def _no_transactions_error(customer, doc):
@@ -474,16 +455,7 @@ def preview_bulk_statements(company, template, as_of_date=None):
 	mis-click: how many customers are in scope, how many have nowhere to send, and which.
 	"""
 	# Validates the template, its company, and read permission — without building a doc.
-	if not frappe.db.exists(PSOA, template):
-		frappe.throw(_("Statement template {0} does not exist").format(frappe.bold(template)))
-	tpl = frappe.get_doc(PSOA, template)
-	tpl.check_permission("read")
-	if tpl.company != company:
-		frappe.throw(
-			_("Statement template {0} belongs to {1}, not {2}").format(
-				frappe.bold(template), frappe.bold(tpl.company), frappe.bold(company)
-			)
-		)
+	_assert_template_usable(template, company)
 
 	customers = _company_customers(company)
 	readable = [c for c in customers if frappe.has_permission("Customer", "read", c.name)]
@@ -509,8 +481,15 @@ def email_bulk_statements(company, template, as_of_date=None):
 	"""Queue a statement for every customer of `company` who has transactions.
 
 	Who actually receives one is decided per batch in the worker, which skips anyone with no
-	rows and anyone with no address. Nothing here pre-computes that.
+	rows and anyone with no address. Nothing here pre-computes that — but the template itself is
+	validated synchronously, before anything is enqueued. It used to get that validation for free
+	by calling into a doc-building path; without it, a template that does not exist, is
+	unreadable, or belongs to another company would return {"batches": N} to the caller and only
+	throw later, inside the worker's _narrow_statement_doc, outside the per-customer try — killing
+	every batch after the caller had already been told it worked.
 	"""
+	_assert_template_usable(template, company)
+
 	customers = _company_customers(company)
 	if not customers:
 		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))

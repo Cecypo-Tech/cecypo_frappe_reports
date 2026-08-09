@@ -9,7 +9,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_months, getdate, today
 
 from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
-	_build_bulk_statement_doc,
+	_assert_template_usable,
 	_build_statement_doc,
 	_company_customers,
 	_customers_with_any_email,
@@ -181,42 +181,30 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			_build_statement_doc(None, TEST_COMPANY, tpl.name, today())
 
-	# ── bulk preview ─────────────────────────────────────────────────────────
+	# ── _assert_template_usable ─────────────────────────────────────────────────
 
-	def test_bulk_doc_widens_to_every_enabled_customer_and_is_never_persisted(self):
-		"""The bulk clone must reach every customer with GL activity against the company, not just
-		the template's own two, and must stay in memory the exact same way the single-customer
-		clone does."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+	def test_assert_template_usable_passes_for_a_valid_template(self):
+		"""The positive case: a template that exists, is readable, and belongs to the given
+		company must return the doc rather than throwing."""
 		tpl = self._make_template()
-		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
 
-		doc = _build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
+		usable = _assert_template_usable(tpl.name, TEST_COMPANY)
 
-		self.assertGreater(len(doc.customers), 1)
-		self.assertTrue(doc.is_new())
-		self.assertIsNone(doc.get("__unsaved_name"))
-		# The template itself keeps its original two rows and is untouched.
-		self.assertEqual(
-			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
-		)
-		self.assertEqual(
-			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
-		)
+		self.assertEqual(usable.name, tpl.name)
 
-	def test_bulk_doc_applies_the_same_template_company_guard(self):
-		"""Reuses _build_statement_doc, so a template belonging to another company must still throw
-		even though the bulk path never receives an explicit customer from the caller. Giving
-		OTHER_COMPANY a transacting customer keeps _company_customers non-empty, so it is genuinely
-		the company guard that fires here, not the empty-customer-list branch."""
-		tpl = self._make_template()
-		self._make_other_company_invoice(OTHER_CUSTOMER)
+	def test_assert_template_usable_throws_for_a_nonexistent_template(self):
+		with self.assertRaises(frappe.ValidationError):
+			_assert_template_usable("__nonexistent__", TEST_COMPANY)
+
+	def test_assert_template_usable_throws_for_a_template_belonging_to_another_company(self):
+		"""This is the check that stops one company's letterhead and accounts being used to
+		render another company's statement — the one the fix wave restores to the bulk-send path."""
+		tpl = self._make_template()  # belongs to TEST_COMPANY
 
 		with self.assertRaises(frappe.ValidationError):
-			_build_bulk_statement_doc(OTHER_COMPANY, tpl.name, today())
+			_assert_template_usable(tpl.name, OTHER_COMPANY)
+
+	# ── bulk preview ─────────────────────────────────────────────────────────
 
 	def test_company_customers_excludes_customers_of_another_company(self):
 		"""Pins the round-1 fix: _company_customers must scope through GL Entry rather than
@@ -256,6 +244,19 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertEqual(reconciled, result["in_scope"])
 		self.assertEqual(result["template"], tpl.name)
 		self.assertEqual(result["as_of_date"], str(getdate(as_of)))
+
+	def test_preview_bulk_statements_throws_for_a_nonexistent_template(self):
+		"""Finding 2: the manifest's template checks had no test of their own. A regression here
+		(e.g. the company guard being dropped) must fail loudly rather than silently returning a
+		manifest built from an unreadable or wrong-company template."""
+		with self.assertRaises(frappe.ValidationError):
+			preview_bulk_statements(TEST_COMPANY, "__nonexistent__", today())
+
+	def test_preview_bulk_statements_throws_for_a_template_belonging_to_another_company(self):
+		tpl = self._make_template()  # belongs to TEST_COMPANY
+
+		with self.assertRaises(frappe.ValidationError):
+			preview_bulk_statements(OTHER_COMPANY, tpl.name, today())
 
 	def test_unreadable_customer_is_counted_as_not_permitted_and_never_named(self):
 		"""has_permission is checked per customer before the bulk email query runs, so a user with
@@ -320,50 +321,6 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		without_email_names = [row["customer"] for row in result["without_email"]]
 		self.assertNotIn(quiet.name, without_email_names)
 		self.assertEqual(result["in_scope"], len(_company_customers(TEST_COMPANY)))
-
-	def test_bulk_doc_seeds_with_a_readable_customer_when_the_first_is_unpermitted(self):
-		"""Regression: frappe.get_all does not check permissions, so _company_customers()[0] can be
-		a customer this caller cannot read. The old code fed customers[0] straight into
-		_build_statement_doc, whose has_permission(throw=True) then blew up the whole call on a
-		customer nobody asked to see. The seed must skip past an unreadable customer instead."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
-		tpl = self._make_template()
-
-		customers = _company_customers(TEST_COMPANY)
-		unreadable = customers[0].name
-		real_has_permission = frappe.has_permission
-
-		def side_effect(*args, **kwargs):
-			doctype = args[0] if args else kwargs.get("doctype")
-			doc = args[2] if len(args) > 2 else kwargs.get("doc")
-			if doctype == "Customer" and doc == unreadable:
-				if kwargs.get("throw"):
-					raise frappe.PermissionError
-				return False
-			return real_has_permission(*args, **kwargs)
-
-		with patch("frappe.has_permission", side_effect=side_effect):
-			doc = _build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
-
-		# Building must succeed (no raw PermissionError) and still widen to every customer, not
-		# just the readable seed.
-		self.assertGreater(len(doc.customers), 1)
-
-	def test_bulk_doc_throws_a_readable_message_when_no_customer_is_permitted(self):
-		"""If every GL-active customer is unreadable, the seed loop finds none: this must throw a
-		clear, catchable error rather than letting an unreadable customers[0] raise a bare
-		PermissionError from deep inside _build_statement_doc."""
-		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
-
-		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
-		tpl = self._make_template()
-
-		with patch("frappe.has_permission", return_value=False):
-			with self.assertRaises(frappe.ValidationError):
-				_build_bulk_statement_doc(TEST_COMPANY, tpl.name, today())
 
 	def test_preview_bulk_statements_runs_no_report_pass(self):
 		"""The whole point of this task: the preview must not run a full report render per
@@ -537,16 +494,53 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertEqual(result, {"batches": 1})
 
 	def test_email_bulk_statements_throws_and_does_not_enqueue_when_company_has_no_customers(self):
-		"""The only remaining guard: an address-less or transaction-less customer is no longer
-		grounds to throw (the batch worker skips them correctly, per batch), but a company with
-		zero GL-active customers must still throw rather than enqueue an empty run."""
+		"""The remaining post-template guard: an address-less or transaction-less customer is no
+		longer grounds to throw (the batch worker skips them correctly, per batch), but a company
+		with zero GL-active customers must still throw rather than enqueue an empty run.
+
+		Uses a template that legitimately belongs to OTHER_COMPANY, so this test is isolated from
+		the template guard that now runs ahead of it — the fix wave's own reordering means a
+		nonexistent/mismatched template here would be caught by _assert_template_usable first and
+		this test would stop meaning what its name says."""
+		tpl = self._make_template(company=OTHER_COMPANY)
+
 		with patch(
 			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.enqueue_statement_batches"
 		) as mock_chunker:
 			with self.assertRaises(frappe.ValidationError):
-				email_bulk_statements(OTHER_COMPANY, "__nonexistent__", today())
+				email_bulk_statements(OTHER_COMPANY, tpl.name, today())
 
 		mock_chunker.assert_not_called()
+
+	def test_email_bulk_statements_throws_and_does_not_enqueue_for_a_nonexistent_template(self):
+		"""THE FINDING THIS FIX WAVE CLOSES. Before this fix, a bad template was not validated
+		until the worker ran _narrow_statement_doc, outside the per-customer try — so the caller
+		was already told {"batches": N} while every batch then failed silently. Uses a company
+		WITH GL-active customers, so this specifically proves the template guard fires before
+		enqueuing, not the (separately tested) no-customers guard."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			with self.assertRaises(frappe.ValidationError):
+				email_bulk_statements(TEST_COMPANY, "__nonexistent__", today())
+
+		mock_enqueue.assert_not_called()
+
+	def test_email_bulk_statements_throws_and_does_not_enqueue_for_a_template_belonging_to_another_company(self):
+		"""The company check specifically: it stops one company's letterhead and accounts being
+		used to render another company's statement. Giving OTHER_COMPANY a transacting customer
+		keeps _company_customers non-empty, proving it is genuinely the template-company guard
+		that fires, not the empty-customer-list branch it sits ahead of."""
+		tpl = self._make_template()  # belongs to TEST_COMPANY
+		self._make_other_company_invoice(OTHER_CUSTOMER)
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			with self.assertRaises(frappe.ValidationError):
+				email_bulk_statements(OTHER_COMPANY, tpl.name, today())
+
+		mock_enqueue.assert_not_called()
 
 	def test_email_bulk_statements_never_saves_the_doc(self):
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
