@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_months, getdate, today
+from frappe.utils import add_months, get_datetime, getdate, today
 
 from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_assert_template_usable,
@@ -607,6 +607,13 @@ class TestStatementOfAccounts(IntegrationTestCase):
 			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
 		)
 
+	def test_email_bulk_statements_is_post_only(self):
+		"""THE FINDING ITEM 4 CLOSES. Same GET/CSRF exposure as send_psoa_in_batches, but reachable
+		by anyone who can guess a company/template pair. Both klik_pos's delegating endpoint and
+		the SPA service already call this via POST, so restricting to POST changes nothing for the
+		real callers."""
+		self.assertEqual(frappe.allowed_http_methods_for_whitelisted_func[email_bulk_statements], ["POST"])
+
 	# ── batch worker ─────────────────────────────────────────────────────────
 
 	def test_narrow_statement_doc_narrows_to_exactly_the_given_customers(self):
@@ -683,6 +690,56 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertEqual(len(job_ids), len(set(job_ids)))
 		self.assertTrue(all(call.kwargs["deduplicate"] for call in mock_enqueue.call_args_list))
 
+	def test_enqueue_statement_batches_job_id_varies_across_runs_of_the_same_desk_record(self):
+		"""THE FINDING ITEM 3 CLOSES. The desk path always passes as_of_date=None (it sends for the
+		record's own configured period), so before this fix the job id was CONSTANT across runs of
+		the same record. With deduplicate=True, Frappe returns None on a match without raising,
+		while enqueue_statement_batches still returns the batch count — so a user who sends a
+		record, spots a mistake, fixes it, and clicks again would have every batch id collide with
+		one still queued (or just completed): nothing enqueues, and the toast still claims success.
+		A coarse per-minute run bucket must make a later call (a different "run") produce different
+		job ids even though template/customers/as_of_date are byte-for-byte identical."""
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER}]
+
+		with (
+			patch("frappe.enqueue") as mock_enqueue,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.now_datetime",
+				return_value=get_datetime("2026-01-01 00:00:00"),
+			),
+		):
+			enqueue_statement_batches(tpl.name, rows, as_of_date=None, caller="psoa")
+		first_run_job_id = mock_enqueue.call_args.kwargs["job_id"]
+
+		with (
+			patch("frappe.enqueue") as mock_enqueue,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.now_datetime",
+				return_value=get_datetime("2026-01-01 00:05:00"),
+			),
+		):
+			enqueue_statement_batches(tpl.name, rows, as_of_date=None, caller="psoa")
+		second_run_job_id = mock_enqueue.call_args.kwargs["job_id"]
+
+		self.assertNotEqual(first_run_job_id, second_run_job_id)
+
+	def test_enqueue_statement_batches_job_id_is_namespaced_by_caller(self):
+		"""The desk (psoa) and POS callers must not collide even if they were ever called with the
+		same template/date/batch-index, since a shared namespace would let one caller's dedupe
+		swallow the other's send."""
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER}]
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			enqueue_statement_batches(tpl.name, rows, as_of_date=None, caller="psoa")
+			psoa_job_id = mock_enqueue.call_args.kwargs["job_id"]
+
+			enqueue_statement_batches(tpl.name, rows, as_of_date=None, caller="pos")
+			pos_job_id = mock_enqueue.call_args.kwargs["job_id"]
+
+		self.assertNotEqual(psoa_job_id, pos_job_id)
+
 	def test_send_statement_batch_skips_customer_with_no_recipient_without_aborting(self):
 		"""Ported from the deleted _send_bulk_statements' equivalent test: one customer with no
 		resolvable address (an empty list, not a PermissionError) must cost only that customer,
@@ -717,10 +774,10 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		mock_sendmail.assert_called_once()
 		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
 
-	def test_send_statement_batch_uses_get_recipients_and_cc_when_row_carries_an_email(self):
-		"""A saved PSOA record's rows carry billing_email/primary_email from fetch_customers; that
-		data must route through ERPNext's own get_recipients_and_cc so primary_mandatory/cc_to are
-		honoured, not through the live _resolve_recipients lookup."""
+	def test_send_statement_batch_uses_get_recipients_and_cc_when_use_record_recipients_is_true(self):
+		"""The desk path (use_record_recipients=True) must route through ERPNext's own
+		get_recipients_and_cc so primary_mandatory/cc_to are honoured, not through the live
+		_resolve_recipients lookup — regardless of whether the row itself carries an email."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
@@ -747,7 +804,7 @@ class TestStatementOfAccounts(IntegrationTestCase):
 			),
 			patch("frappe.sendmail") as mock_sendmail,
 		):
-			_send_statement_batch(tpl.name, rows)
+			_send_statement_batch(tpl.name, rows, use_record_recipients=True)
 
 		mock_get_recipients_and_cc.assert_called_once()
 		self.assertEqual(mock_get_recipients_and_cc.call_args.args[0], TEST_CUSTOMER)
@@ -755,14 +812,78 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		mock_sendmail.assert_called_once()
 		self.assertEqual(mock_sendmail.call_args.kwargs["recipients"], ["billing@example.com"])
 
-	def test_send_statement_batch_uses_resolve_recipients_when_row_carries_no_email(self):
-		"""Rows built in memory (the POS path) carry neither email field, so they must resolve
-		live rather than going through the PSOA-record-only get_recipients_and_cc."""
+	def test_send_statement_batch_uses_resolve_recipients_when_use_record_recipients_is_false(self):
+		"""The POS path (use_record_recipients=False, the default) has no saved record to honour
+		and must resolve live rather than going through the PSOA-record-only get_recipients_and_cc,
+		even though its rows carry neither email field."""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
 		tpl = self._make_template()
 		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["live@example.com"],
+			) as mock_resolve_recipients,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_recipients_and_cc"
+			) as mock_get_recipients_and_cc,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_resolve_recipients.assert_called_once_with(TEST_CUSTOMER)
+		mock_get_recipients_and_cc.assert_not_called()
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["recipients"], ["live@example.com"])
+
+	def test_send_statement_batch_desk_row_with_both_emails_empty_does_not_fall_through_to_live_resolution(self):
+		"""THE FINDING ITEM 1 CLOSES. ERPNext's fetch_customers legitimately writes rows with BOTH
+		billing_email and primary_email empty (a customer with no billing contact, and
+		primary_mandatory off) — and its own "Send Emails" button skips those rows. Before this
+		fix, _batch_recipients branched on the row's own data, so an empty desk row fell through
+		to _resolve_recipients and could mail a customer ERPNext's own button deliberately
+		excludes. use_record_recipients=True must still route through get_recipients_and_cc even
+		when the row carries neither field, and must not send when that returns no recipients."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x", "billing_email": "", "primary_email": ""}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_recipients_and_cc",
+				return_value=([], []),
+			) as mock_get_recipients_and_cc,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["should-never-be-used@example.com"],
+			) as mock_resolve_recipients,
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows, use_record_recipients=True)
+
+		mock_get_recipients_and_cc.assert_called_once()
+		mock_resolve_recipients.assert_not_called()
+		mock_sendmail.assert_not_called()
+
+	def test_send_statement_batch_pos_row_with_both_emails_empty_resolves_live(self):
+		"""The same empty-fields row, sent down the POS path (use_record_recipients=False), has no
+		record to honour and must resolve live — this is the other half of the item 1 fix: the
+		caller's declared intent decides the source, never the row's own (possibly coincidentally
+		empty) data."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x", "billing_email": "", "primary_email": ""}]
 
 		with (
 			patch(
@@ -887,18 +1008,80 @@ class TestStatementOfAccounts(IntegrationTestCase):
 			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
 		)
 
+	def test_send_statement_batch_uses_the_records_configured_sender(self):
+		"""ERPNext's own send_emails resolves doc.sender to an Email Account's email_id and passes
+		it to frappe.sendmail; without this, every batched statement would go from the site
+		default instead of the accounts mailbox the record was configured with, and customer
+		replies would land in the wrong inbox on every desk send."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template(sender="_Test Email Account 1")
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["good@example.com"],
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["sender"], "test@example.com")
+
+	def test_send_statement_batch_falls_back_to_session_user_when_no_sender_configured(self):
+		"""Mirrors ERPNext's own fallback exactly: a record with no configured sender must send as
+		the acting user, not silently pass no sender at all."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		self.assertFalse(tpl.sender)
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["good@example.com"],
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["sender"], frappe.session.user)
+
 	# ── desk button endpoint ─────────────────────────────────────────────────
 
 	def test_send_psoa_in_batches_uses_the_records_own_customer_rows(self):
 		"""The endpoint must read doc.customers - the rows ERPNext's own fetch_customers
-		populated on the saved record, carrying billing_email/primary_email - and must not
-		substitute the company-wide customer list built by the POS path's _company_customers."""
+		populated on the saved record, carrying customer_name/billing_email/primary_email - and
+		must not substitute the company-wide customer list built by the POS path's
+		_company_customers.
+
+		All four fields are pinned, not just customer/billing_email: customer_name is what the
+		email templates render, and primary_email is the only place primary_mandatory's source
+		value is populated, so dropping either in a future refactor would silently degrade the
+		desk send without any test noticing."""
 		tpl = self._make_template()
 		frappe.db.set_value(
 			"Process Statement Of Accounts Customer",
 			{"parent": tpl.name, "customer": TEST_CUSTOMER},
-			"billing_email",
-			"billing@example.com",
+			{
+				"customer_name": "Test Customer Display Name",
+				"billing_email": "billing@example.com",
+				"primary_email": "primary@example.com",
+			},
 		)
 
 		with patch("frappe.enqueue") as mock_enqueue:
@@ -910,7 +1093,9 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertEqual(sent_customers, sorted([TEST_CUSTOMER, OTHER_CUSTOMER]))
 
 		by_customer = {row["customer"]: row for row in sent_rows}
+		self.assertEqual(by_customer[TEST_CUSTOMER]["customer_name"], "Test Customer Display Name")
 		self.assertEqual(by_customer[TEST_CUSTOMER]["billing_email"], "billing@example.com")
+		self.assertEqual(by_customer[TEST_CUSTOMER]["primary_email"], "primary@example.com")
 		self.assertEqual(result, {"batches": 1, "customers": 2})
 
 	def test_send_psoa_in_batches_passes_as_of_date_none(self):
@@ -945,6 +1130,14 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		mock_enqueue.assert_called_once()
 		mock_sendmail.assert_not_called()
+
+	def test_send_psoa_in_batches_is_post_only(self):
+		"""THE FINDING ITEM 4 CLOSES. @frappe.whitelist() with no methods accepts GET, and Frappe
+		only validates CSRF for unsafe methods — so an <img src="...?document_name=X"> on any page
+		a logged-in user visits would fire a customer-wide mail blast. psoa_batch.js already calls
+		this via frappe.call, which POSTs, so restricting to POST changes nothing for the real
+		caller."""
+		self.assertEqual(frappe.allowed_http_methods_for_whitelisted_func[send_psoa_in_batches], ["POST"])
 
 	# ── template listing ─────────────────────────────────────────────────────
 

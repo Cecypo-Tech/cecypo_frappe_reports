@@ -17,7 +17,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import add_months, getdate, today
+from frappe.utils import add_months, getdate, now_datetime, today
 from frappe.utils.pdf import get_pdf
 
 from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts import (
@@ -228,20 +228,26 @@ def _narrow_statement_doc(template, customer_rows, as_of_date=None):
 	return doc
 
 
-def _batch_recipients(entry, doc):
-	"""Recipients for one row, using whichever source the row's own data implies.
+def _batch_recipients(entry, doc, use_record_recipients=False):
+	"""Recipients for one row.
 
-	A saved PSOA record's rows carry billing_email/primary_email from ERPNext's fetch_customers,
-	and that path also honours primary_mandatory and cc_to. Rows built in memory carry neither,
-	so they resolve live. Branching on the data rather than a mode flag keeps both callers
-	honest without either having to declare which it is.
+	The desk path MUST use get_recipients_and_cc even when a row's email fields are empty:
+	ERPNext's fetch_customers writes empty rows for customers with no billing contact (rows are
+	only dropped when primary_mandatory is on), and its own "Send Emails" button skips those rows
+	too. Falling through to live resolution there would mail customers the record deliberately
+	excludes, and would additionally consult a source ERPNext's PSOA path never uses
+	(customer_primary_contact.email_id) plus a live re-read of Customer.email_id.
+
+	The row's own data cannot distinguish "empty because POS built this row" from "empty because
+	this customer has none" — so the caller has to say which it is, via use_record_recipients.
+	The POS path has no saved record to honour and resolves live.
 	"""
-	if entry.get("billing_email") or entry.get("primary_email"):
+	if use_record_recipients:
 		return get_recipients_and_cc(entry.customer, doc)
 	return _resolve_recipients(entry.customer), []
 
 
-def _send_statement_batch(template, customer_rows, as_of_date=None, user=None):
+def _send_statement_batch(template, customer_rows, as_of_date=None, user=None, use_record_recipients=False):
 	"""Render and send one statement per customer in this batch.
 
 	Batched because ERPNext's own send renders every customer inside one HTTP request and times
@@ -256,13 +262,19 @@ def _send_statement_batch(template, customer_rows, as_of_date=None, user=None):
 	doc = _narrow_statement_doc(template, customer_rows, as_of_date)
 	statements = get_statement_dict(doc) or {}
 
+	# Mirrors ERPNext's own send_emails: mail goes from the record's configured Email Account, not
+	# the site default, so customer replies land in the mailbox the record was set up for.
+	sender = (
+		frappe.db.get_value("Email Account", doc.sender, "email_id") if doc.sender else frappe.session.user
+	)
+
 	for entry in doc.customers:
 		statement_html = statements.get(entry.customer)
 		if not statement_html:
 			continue
 
 		try:
-			recipients, cc = _batch_recipients(entry, doc)
+			recipients, cc = _batch_recipients(entry, doc, use_record_recipients)
 			if not recipients:
 				continue
 
@@ -270,6 +282,7 @@ def _send_statement_batch(template, customer_rows, as_of_date=None, user=None):
 			context = get_context(entry.customer, doc)
 			frappe.sendmail(
 				recipients=recipients,
+				sender=sender,
 				cc=cc,
 				subject=_render_or(doc.subject, context, _("Statement of Accounts")),
 				message=_render_or(
@@ -289,7 +302,9 @@ def _send_statement_batch(template, customer_rows, as_of_date=None, user=None):
 			)
 
 
-def enqueue_statement_batches(template, customer_rows, as_of_date=None, batch_size=None):
+def enqueue_statement_batches(
+	template, customer_rows, as_of_date=None, batch_size=None, use_record_recipients=False, caller="pos"
+):
 	"""Split `customer_rows` into batches and enqueue one job each. Returns the batch count.
 
 	Enqueued up front rather than chained, so workers run them in parallel and one failed batch
@@ -299,18 +314,28 @@ def enqueue_statement_batches(template, customer_rows, as_of_date=None, batch_si
 	rows = list(customer_rows)
 	batches = [rows[i : i + batch_size] for i in range(0, len(rows), batch_size)]
 
+	# A minute bucket: a double-click inside one run still dedupes, but a deliberate re-send after
+	# fixing the record is not silently swallowed. Without this, the desk path's job id would be
+	# constant across runs (it always passes as_of_date=None by design), so with deduplicate=True
+	# Frappe returns None on a match WITHOUT raising while this function still returns the batch
+	# count — a corrected re-send after a bad first send would silently enqueue nothing and the
+	# caller would be told it worked. `caller` also keeps the two entry points' job ids from
+	# colliding with each other.
+	run_bucket = int(now_datetime().timestamp() // 60)
+
 	for index, batch in enumerate(batches):
 		frappe.enqueue(
 			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._send_statement_batch",
 			queue="long",
 			timeout=1800,
 			# Per batch, so a retry of the whole run cannot re-send a batch already in flight.
-			job_id=f"soa-batch::{template}::{as_of_date or 'template-dates'}::{index}",
+			job_id=f"soa-batch::{caller}::{template}::{as_of_date or 'template-dates'}::{run_bucket}::{index}",
 			deduplicate=True,
 			template=template,
 			customer_rows=batch,
 			as_of_date=as_of_date,
 			user=frappe.session.user,
+			use_record_recipients=use_record_recipients,
 		)
 
 	return len(batches)
@@ -319,13 +344,18 @@ def enqueue_statement_batches(template, customer_rows, as_of_date=None, batch_si
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def send_psoa_in_batches(document_name):
 	"""Send a saved Process Statement Of Accounts in batches, from the desk.
 
 	ERPNext's own Send Emails button renders every customer's PDF inside the HTTP request, so it
 	times out on a sizeable customer base. This enqueues the same work in batches instead and
 	returns immediately.
+
+	POST only: @frappe.whitelist() with no methods accepts GET, and Frappe only validates CSRF for
+	unsafe methods — an <img src="...?document_name=X"> on any page a logged-in user visits would
+	otherwise fire a customer-wide mail blast. psoa_batch.js already calls this via frappe.call,
+	which POSTs.
 	"""
 	doc = frappe.get_doc(PSOA, document_name)
 	doc.check_permission("read")
@@ -344,7 +374,13 @@ def send_psoa_in_batches(document_name):
 
 	# as_of_date is None on purpose: the record's own from/to or posting date is the period the
 	# user configured, and a batched send must not silently re-date it to today.
-	batches = enqueue_statement_batches(doc.name, rows, as_of_date=None)
+	# use_record_recipients=True: this record's rows carry ERPNext's own billing_email/primary_email
+	# (possibly both empty for a customer with no billing contact), and the desk send must honour
+	# that exactly as ERPNext's own "Send Emails" button does, never falling through to a live
+	# resolution that would mail people the record deliberately excludes.
+	batches = enqueue_statement_batches(
+		doc.name, rows, as_of_date=None, use_record_recipients=True, caller="psoa"
+	)
 	return {"batches": batches, "customers": len(rows)}
 
 
@@ -476,7 +512,7 @@ def preview_bulk_statements(company, template, as_of_date=None):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def email_bulk_statements(company, template, as_of_date=None):
 	"""Queue a statement for every customer of `company` who has transactions.
 
@@ -487,6 +523,11 @@ def email_bulk_statements(company, template, as_of_date=None):
 	unreadable, or belongs to another company would return {"batches": N} to the caller and only
 	throw later, inside the worker's _narrow_statement_doc, outside the per-customer try — killing
 	every batch after the caller had already been told it worked.
+
+	POST only: @frappe.whitelist() with no methods accepts GET, and Frappe only validates CSRF for
+	unsafe methods — an <img src="...?company=X&template=Y"> on any page a logged-in user visits
+	would otherwise fire a customer-wide mail blast. Both klik_pos's delegating endpoint and the
+	SPA service already call this via POST.
 	"""
 	_assert_template_usable(template, company)
 
@@ -495,7 +536,7 @@ def email_bulk_statements(company, template, as_of_date=None):
 		frappe.throw(_("No customers found for {0}").format(frappe.bold(company)))
 
 	rows = [{"customer": c.name, "customer_name": c.customer_name} for c in customers]
-	return {"batches": enqueue_statement_batches(template, rows, as_of_date=as_of_date)}
+	return {"batches": enqueue_statement_batches(template, rows, as_of_date=as_of_date, caller="pos")}
 
 
 @frappe.whitelist()
