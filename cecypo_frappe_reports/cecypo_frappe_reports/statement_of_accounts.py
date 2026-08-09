@@ -399,6 +399,35 @@ def enqueue_statement_batches(template, customer_rows, as_of_date=None, batch_si
 
 
 @frappe.whitelist()
+def send_psoa_in_batches(document_name):
+	"""Send a saved Process Statement Of Accounts in batches, from the desk.
+
+	ERPNext's own Send Emails button renders every customer's PDF inside the HTTP request, so it
+	times out on a sizeable customer base. This enqueues the same work in batches instead and
+	returns immediately.
+	"""
+	doc = frappe.get_doc(PSOA, document_name)
+	doc.check_permission("read")
+
+	rows = [
+		{
+			"customer": row.customer,
+			"customer_name": row.customer_name,
+			"billing_email": row.billing_email,
+			"primary_email": row.primary_email,
+		}
+		for row in doc.customers
+	]
+	if not rows:
+		frappe.throw(_("{0} has no customers to send to.").format(frappe.bold(document_name)))
+
+	# as_of_date is None on purpose: the record's own from/to or posting date is the period the
+	# user configured, and a batched send must not silently re-date it to today.
+	batches = enqueue_statement_batches(doc.name, rows, as_of_date=None)
+	return {"batches": batches, "customers": len(rows)}
+
+
+@frappe.whitelist()
 def get_statement_templates(company):
 	"""PSOA records usable as a formatting template for `company`, newest first."""
 	frappe.has_permission(PSOA, "read", throw=True)

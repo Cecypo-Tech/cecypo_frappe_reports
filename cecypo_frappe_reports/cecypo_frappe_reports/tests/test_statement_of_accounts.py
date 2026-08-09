@@ -23,6 +23,7 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	get_statement_templates,
 	preview_bulk_statements,
 	render_statement_html,
+	send_psoa_in_batches,
 )
 
 TEST_COMPANY = "_Test Company"
@@ -839,6 +840,65 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		self.assertEqual(
 			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
 		)
+
+	# ── desk button endpoint ─────────────────────────────────────────────────
+
+	def test_send_psoa_in_batches_uses_the_records_own_customer_rows(self):
+		"""The endpoint must read doc.customers - the rows ERPNext's own fetch_customers
+		populated on the saved record, carrying billing_email/primary_email - and must not
+		substitute the company-wide customer list built by the POS path's _company_customers."""
+		tpl = self._make_template()
+		frappe.db.set_value(
+			"Process Statement Of Accounts Customer",
+			{"parent": tpl.name, "customer": TEST_CUSTOMER},
+			"billing_email",
+			"billing@example.com",
+		)
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			result = send_psoa_in_batches(tpl.name)
+
+		mock_enqueue.assert_called_once()
+		sent_rows = mock_enqueue.call_args.kwargs["customer_rows"]
+		sent_customers = sorted(row["customer"] for row in sent_rows)
+		self.assertEqual(sent_customers, sorted([TEST_CUSTOMER, OTHER_CUSTOMER]))
+
+		by_customer = {row["customer"]: row for row in sent_rows}
+		self.assertEqual(by_customer[TEST_CUSTOMER]["billing_email"], "billing@example.com")
+		self.assertEqual(result, {"batches": 1, "customers": 2})
+
+	def test_send_psoa_in_batches_passes_as_of_date_none(self):
+		"""The single easiest thing to get wrong here: passing a date would silently re-date the
+		user's configured record to today instead of keeping its own posting/from/to dates."""
+		tpl = self._make_template(report="Accounts Receivable")
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			send_psoa_in_batches(tpl.name)
+
+		mock_enqueue.assert_called_once()
+		self.assertIsNone(mock_enqueue.call_args.kwargs["as_of_date"])
+
+	def test_send_psoa_in_batches_throws_when_record_has_no_customers(self):
+		tpl = self._make_template()
+		# Bypass document validation (which itself requires at least one customer) to reach the
+		# state the endpoint's own guard exists for: a saved record with an empty customers table.
+		frappe.db.delete("Process Statement Of Accounts Customer", {"parent": tpl.name})
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			with self.assertRaises(frappe.ValidationError):
+				send_psoa_in_batches(tpl.name)
+
+		mock_enqueue.assert_not_called()
+
+	def test_send_psoa_in_batches_never_sends_mail_directly(self):
+		"""Nothing about the desk button path may touch frappe.sendmail; it only enqueues."""
+		tpl = self._make_template()
+
+		with patch("frappe.enqueue") as mock_enqueue, patch("frappe.sendmail") as mock_sendmail:
+			send_psoa_in_batches(tpl.name)
+
+		mock_enqueue.assert_called_once()
+		mock_sendmail.assert_not_called()
 
 	# ── template listing ─────────────────────────────────────────────────────
 
