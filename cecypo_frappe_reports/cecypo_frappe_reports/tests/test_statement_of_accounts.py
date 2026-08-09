@@ -204,6 +204,21 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			_assert_template_usable(tpl.name, OTHER_COMPANY)
 
+	def test_assert_template_usable_throws_for_an_unreadable_template(self):
+		"""The third bad-template case, alongside nonexistent and wrong-company: a template the
+		caller has no read permission for. Patches Document.check_permission (the same mechanism
+		the seed-permission tests use for Customer, applied here to the template doc) so this pins
+		that tpl.check_permission("read") is actually invoked, rather than relying on a real
+		restricted user. If someone later drops that line, this is what catches it."""
+		tpl = self._make_template()
+
+		with patch(
+			"frappe.model.document.Document.check_permission",
+			side_effect=frappe.PermissionError,
+		):
+			with self.assertRaises(frappe.PermissionError):
+				_assert_template_usable(tpl.name, TEST_COMPANY)
+
 	# ── bulk preview ─────────────────────────────────────────────────────────
 
 	def test_company_customers_excludes_customers_of_another_company(self):
@@ -257,6 +272,18 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			preview_bulk_statements(OTHER_COMPANY, tpl.name, today())
+
+	def test_preview_bulk_statements_throws_for_an_unreadable_template(self):
+		"""Must throw rather than returning a manifest built from a template the caller cannot
+		read. Same Document.check_permission patch as the other two unreadable-template tests."""
+		tpl = self._make_template()
+
+		with patch(
+			"frappe.model.document.Document.check_permission",
+			side_effect=frappe.PermissionError,
+		):
+			with self.assertRaises(frappe.PermissionError):
+				preview_bulk_statements(TEST_COMPANY, tpl.name, today())
 
 	def test_unreadable_customer_is_counted_as_not_permitted_and_never_named(self):
 		"""has_permission is checked per customer before the bulk email query runs, so a user with
@@ -539,6 +566,26 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		with patch("frappe.enqueue") as mock_enqueue:
 			with self.assertRaises(frappe.ValidationError):
 				email_bulk_statements(OTHER_COMPANY, tpl.name, today())
+
+		mock_enqueue.assert_not_called()
+
+	def test_email_bulk_statements_throws_and_does_not_enqueue_for_an_unreadable_template(self):
+		"""The third bad-template case at this entry point: an unreadable template must throw
+		and must not enqueue, exactly like the nonexistent and wrong-company cases above. Uses a
+		company WITH GL-active customers so this is genuinely the template-permission guard, not
+		the no-customers guard it sits ahead of."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+
+		with patch(
+			"frappe.model.document.Document.check_permission",
+			side_effect=frappe.PermissionError,
+		):
+			with patch("frappe.enqueue") as mock_enqueue:
+				with self.assertRaises(frappe.PermissionError):
+					email_bulk_statements(TEST_COMPANY, tpl.name, today())
 
 		mock_enqueue.assert_not_called()
 
