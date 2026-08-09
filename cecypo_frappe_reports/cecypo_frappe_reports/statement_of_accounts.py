@@ -23,6 +23,7 @@ from frappe.utils.pdf import get_pdf
 from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts import (
 	get_context,
 	get_customer_emails,
+	get_recipients_and_cc,
 	get_report_pdf,
 	get_statement_dict,
 )
@@ -269,6 +270,129 @@ def _send_bulk_statements(company, template, as_of_date=None, user=None):
 				title="Bulk Statement of Accounts: send failed",
 				message=f"{entry.customer}\n\n{frappe.get_traceback()}",
 			)
+
+
+STATEMENT_BATCH_SIZE = 50
+
+
+def _narrow_statement_doc(template, customer_rows, as_of_date=None):
+	"""Clone `template` in memory, narrowed to `customer_rows`. Never saved.
+
+	`customer_rows` are dicts carrying at least `customer`, and optionally `customer_name`,
+	`billing_email` and `primary_email` — the last two are what a saved PSOA record's own rows
+	carry, and preserving them is what lets the desk path honour its configured recipients.
+
+	`as_of_date=None` deliberately leaves the template's own dates alone, so a PSOA record sends
+	for the period it was configured with rather than for today.
+	"""
+	if not frappe.db.exists(PSOA, template):
+		frappe.throw(_("Statement template {0} does not exist").format(frappe.bold(template)))
+
+	tpl = frappe.get_doc(PSOA, template)
+	tpl.check_permission("read")
+
+	doc = frappe.copy_doc(tpl)
+	doc.customers = []
+	for row in customer_rows:
+		doc.append("customers", dict(row))
+
+	if as_of_date:
+		as_of = getdate(as_of_date)
+		if doc.report == "General Ledger":
+			doc.to_date = as_of
+			doc.from_date = add_months(as_of, -1 * (doc.filter_duration or 12))
+		else:
+			doc.posting_date = as_of
+
+	return doc
+
+
+def _batch_recipients(entry, doc):
+	"""Recipients for one row, using whichever source the row's own data implies.
+
+	A saved PSOA record's rows carry billing_email/primary_email from ERPNext's fetch_customers,
+	and that path also honours primary_mandatory and cc_to. Rows built in memory carry neither,
+	so they resolve live. Branching on the data rather than a mode flag keeps both callers
+	honest without either having to declare which it is.
+	"""
+	if entry.get("billing_email") or entry.get("primary_email"):
+		return get_recipients_and_cc(entry.customer, doc)
+	return _resolve_recipients(entry.customer), []
+
+
+def _send_statement_batch(template, customer_rows, as_of_date=None, user=None):
+	"""Render and send one statement per customer in this batch.
+
+	Batched because ERPNext's own send renders every customer inside one HTTP request and times
+	out on any sizeable customer base. One batch is sized so a worker finishes it comfortably.
+
+	get_report_pdf is deliberately not used: it renders every customer in one pass, so a failure
+	on one aborts the rest of the batch.
+	"""
+	if user:
+		frappe.set_user(user)
+
+	doc = _narrow_statement_doc(template, customer_rows, as_of_date)
+	statements = get_statement_dict(doc) or {}
+
+	for entry in doc.customers:
+		statement_html = statements.get(entry.customer)
+		if not statement_html:
+			continue
+
+		try:
+			recipients, cc = _batch_recipients(entry, doc)
+			if not recipients:
+				continue
+
+			pdf = get_pdf(statement_html, {"orientation": doc.orientation})
+			context = get_context(entry.customer, doc)
+			frappe.sendmail(
+				recipients=recipients,
+				cc=cc,
+				subject=_render_or(doc.subject, context, _("Statement of Accounts")),
+				message=_render_or(
+					doc.body, context, _("Please find your Statement of Accounts attached.")
+				),
+				attachments=[{"fname": _statement_filename(doc, entry.customer), "fcontent": pdf}],
+				reference_doctype="Customer",
+				reference_name=entry.customer,
+				now=False,
+			)
+		except frappe.PermissionError:
+			continue
+		except Exception:
+			frappe.log_error(
+				title="Statement of Accounts: batch send failed",
+				message=f"{template} / {entry.customer}\n\n{frappe.get_traceback()}",
+			)
+
+
+def enqueue_statement_batches(template, customer_rows, as_of_date=None, batch_size=None):
+	"""Split `customer_rows` into batches and enqueue one job each. Returns the batch count.
+
+	Enqueued up front rather than chained, so workers run them in parallel and one failed batch
+	does not stop the rest.
+	"""
+	batch_size = batch_size or STATEMENT_BATCH_SIZE
+	rows = list(customer_rows)
+	batches = [rows[i : i + batch_size] for i in range(0, len(rows), batch_size)]
+
+	for index, batch in enumerate(batches):
+		frappe.enqueue(
+			"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._send_statement_batch",
+			queue="long",
+			timeout=1800,
+			# Per batch, so a retry of the whole run cannot re-send a batch already in flight.
+			job_id=f"soa-batch::{template}::{as_of_date or 'template-dates'}::{index}",
+			deduplicate=True,
+			template=template,
+			customer_rows=batch,
+			as_of_date=as_of_date,
+			user=frappe.session.user,
+		)
+
+	return len(batches)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

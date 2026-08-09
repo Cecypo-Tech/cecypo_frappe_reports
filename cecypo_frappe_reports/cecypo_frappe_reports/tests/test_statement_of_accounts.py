@@ -12,10 +12,13 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_build_bulk_statement_doc,
 	_build_statement_doc,
 	_company_customers,
+	_narrow_statement_doc,
 	_resolve_recipients,
 	_send_bulk_statements,
+	_send_statement_batch,
 	email_bulk_statements,
 	email_statement,
+	enqueue_statement_batches,
 	get_default_recipient,
 	get_statement_templates,
 	preview_bulk_statements,
@@ -583,6 +586,252 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		with patch("frappe.enqueue"):
 			email_bulk_statements(TEST_COMPANY, tpl.name, today())
+
+		self.assertEqual(
+			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
+		)
+		self.assertEqual(
+			frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified"), before
+		)
+
+	# ── batch worker ─────────────────────────────────────────────────────────
+
+	def test_narrow_statement_doc_narrows_to_exactly_the_given_customers(self):
+		tpl = self._make_template()
+		self.assertEqual(len(tpl.customers), 2)
+
+		doc = _narrow_statement_doc(tpl.name, [{"customer": TEST_CUSTOMER, "customer_name": "x"}])
+
+		self.assertTrue(doc.is_new())
+		self.assertEqual(len(doc.customers), 1)
+		self.assertEqual(doc.customers[0].customer, TEST_CUSTOMER)
+		# The template itself must stay untouched.
+		self.assertEqual(
+			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
+		)
+
+	def test_narrow_statement_doc_leaves_template_dates_untouched_when_as_of_date_is_none(self):
+		"""This is what lets the desk path send a saved PSOA record for the period it was
+		configured with, rather than silently re-dating it to today."""
+		tpl = self._make_template(report="Accounts Receivable")
+
+		doc = _narrow_statement_doc(
+			tpl.name, [{"customer": TEST_CUSTOMER, "customer_name": "x"}], as_of_date=None
+		)
+
+		self.assertEqual(getdate(doc.posting_date), getdate(tpl.posting_date))
+		self.assertEqual(getdate(doc.from_date), getdate(tpl.from_date))
+		self.assertEqual(getdate(doc.to_date), getdate(tpl.to_date))
+
+	def test_narrow_statement_doc_maps_as_of_date_like_build_statement_doc_when_given(self):
+		as_of = "2026-03-31"
+
+		ar_tpl = self._make_template(report="Accounts Receivable")
+		ar_doc = _narrow_statement_doc(
+			ar_tpl.name, [{"customer": TEST_CUSTOMER, "customer_name": "x"}], as_of_date=as_of
+		)
+		self.assertEqual(getdate(ar_doc.posting_date), getdate(as_of))
+
+		gl_tpl = self._make_template(report="General Ledger", filter_duration=3)
+		gl_doc = _narrow_statement_doc(
+			gl_tpl.name, [{"customer": TEST_CUSTOMER, "customer_name": "x"}], as_of_date=as_of
+		)
+		self.assertEqual(getdate(gl_doc.to_date), getdate(as_of))
+		self.assertEqual(getdate(gl_doc.from_date), getdate(add_months(as_of, -3)))
+
+	def test_enqueue_statement_batches_splits_customers_into_disjoint_batches_covering_all(self):
+		"""The assertion that matters: a chunker that drops or duplicates a customer either
+		silently skips someone or mails them twice."""
+		tpl = self._make_template()
+		rows = [{"customer": f"BATCH-CUST-{i}"} for i in range(120)]
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			batch_count = enqueue_statement_batches(tpl.name, rows, batch_size=50)
+
+		self.assertEqual(batch_count, 3)
+		self.assertEqual(mock_enqueue.call_count, 3)
+
+		batches = [call.kwargs["customer_rows"] for call in mock_enqueue.call_args_list]
+		self.assertEqual([len(b) for b in batches], [50, 50, 20])
+
+		seen = [row["customer"] for batch in batches for row in batch]
+		# No duplicates and nothing dropped: every input customer appears exactly once.
+		self.assertEqual(len(seen), len(set(seen)))
+		self.assertEqual(sorted(seen), sorted(row["customer"] for row in rows))
+
+	def test_enqueue_statement_batches_job_ids_are_distinct_and_deduplicated(self):
+		tpl = self._make_template()
+		rows = [{"customer": f"BATCH-CUST-{i}"} for i in range(120)]
+
+		with patch("frappe.enqueue") as mock_enqueue:
+			enqueue_statement_batches(tpl.name, rows, batch_size=50)
+
+		job_ids = [call.kwargs["job_id"] for call in mock_enqueue.call_args_list]
+		self.assertEqual(len(job_ids), len(set(job_ids)))
+		self.assertTrue(all(call.kwargs["deduplicate"] for call in mock_enqueue.call_args_list))
+
+	def test_send_statement_batch_uses_get_recipients_and_cc_when_row_carries_an_email(self):
+		"""A saved PSOA record's rows carry billing_email/primary_email from fetch_customers; that
+		data must route through ERPNext's own get_recipients_and_cc so primary_mandatory/cc_to are
+		honoured, not through the live _resolve_recipients lookup."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		rows = [
+			{
+				"customer": TEST_CUSTOMER,
+				"customer_name": "x",
+				"billing_email": "billing@example.com",
+			}
+		]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_recipients_and_cc",
+				return_value=(["billing@example.com"], []),
+			) as mock_get_recipients_and_cc,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients"
+			) as mock_resolve_recipients,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_get_recipients_and_cc.assert_called_once()
+		self.assertEqual(mock_get_recipients_and_cc.call_args.args[0], TEST_CUSTOMER)
+		mock_resolve_recipients.assert_not_called()
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["recipients"], ["billing@example.com"])
+
+	def test_send_statement_batch_uses_resolve_recipients_when_row_carries_no_email(self):
+		"""Rows built in memory (the POS path) carry neither email field, so they must resolve
+		live rather than going through the PSOA-record-only get_recipients_and_cc."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["live@example.com"],
+			) as mock_resolve_recipients,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_recipients_and_cc"
+			) as mock_get_recipients_and_cc,
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_resolve_recipients.assert_called_once_with(TEST_CUSTOMER)
+		mock_get_recipients_and_cc.assert_not_called()
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["recipients"], ["live@example.com"])
+
+	def test_send_statement_batch_logs_and_skips_a_render_failure_without_aborting_the_batch(self):
+		"""Pins the reason get_report_pdf is not used: a render failure on one customer in the
+		batch must cost only that customer."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+		rows = [
+			{"customer": TEST_CUSTOMER, "customer_name": "x"},
+			{"customer": OTHER_CUSTOMER, "customer_name": "y"},
+		]
+
+		def side_effect(customer):
+			return ["good@example.com"] if customer == TEST_CUSTOMER else ["bad@example.com"]
+
+		def failing_get_pdf(html, options=None):
+			if OTHER_CUSTOMER in html:
+				raise Exception("simulated render failure")
+			return b"%PDF-fake"
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				side_effect=side_effect,
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				side_effect=failing_get_pdf,
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+			patch("frappe.log_error") as mock_log_error,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
+		mock_log_error.assert_called_once()
+		self.assertIn(OTHER_CUSTOMER, mock_log_error.call_args.kwargs["message"])
+
+	def test_send_statement_batch_permission_error_is_skipped_without_being_logged(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=700)
+		tpl = self._make_template()
+		rows = [
+			{"customer": TEST_CUSTOMER, "customer_name": "x"},
+			{"customer": OTHER_CUSTOMER, "customer_name": "y"},
+		]
+
+		def side_effect(customer):
+			if customer == OTHER_CUSTOMER:
+				raise frappe.PermissionError
+			return ["good@example.com"]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				side_effect=side_effect,
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+			patch("frappe.log_error") as mock_log_error,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["reference_name"], TEST_CUSTOMER)
+		mock_log_error.assert_not_called()
+
+	def test_send_statement_batch_never_saves_the_doc(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		before = frappe.db.get_value("Process Statement Of Accounts", tpl.name, "modified")
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["good@example.com"],
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail"),
+		):
+			_send_statement_batch(tpl.name, rows)
 
 		self.assertEqual(
 			frappe.db.count("Process Statement Of Accounts Customer", {"parent": tpl.name}), 2
