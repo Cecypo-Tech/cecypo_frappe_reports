@@ -30,6 +30,18 @@ from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of
 
 PSOA = "Process Statement Of Accounts"
 
+# The contract this module offers its consumers, independent of the app's own version.
+#
+# Bump this whenever a consumer could break: a whitelisted function removed or renamed, a
+# parameter removed, or a RETURN SHAPE changed. A return-shape change is the one that motivated
+# this constant — preview_bulk_statements once returned will_send/no_email and now returns
+# in_scope/with_email, and no amount of attribute resolution can tell those apart.
+#
+#   1 — the original single-customer API, plus a bulk preview returning will_send/no_email
+#   2 — bulk preview returns the manifest (in_scope/with_email/without_email/not_permitted),
+#       email_bulk_statements returns {"batches": N}, batched send and PSOA button added
+STATEMENT_API_VERSION = 2
+
 
 # ── Core ─────────────────────────────────────────────────────────────────────
 
@@ -292,6 +304,9 @@ def _send_statement_batch(template, customer_rows, as_of_date=None, user=None, u
 				reference_doctype="Customer",
 				reference_name=entry.customer,
 				now=False,
+				# Mirrors ERPNext's own send_emails: CC'd recipients are visible in the mail header,
+				# not silently hidden from everyone else on the thread.
+				expose_recipients="header",
 			)
 		except frappe.PermissionError:
 			continue

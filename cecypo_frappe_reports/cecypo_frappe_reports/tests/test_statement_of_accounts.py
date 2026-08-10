@@ -614,6 +614,65 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		real callers."""
 		self.assertEqual(frappe.allowed_http_methods_for_whitelisted_func[email_bulk_statements], ["POST"])
 
+	# ── contract version ─────────────────────────────────────────────────────
+
+	def test_statement_api_version_is_declared_and_an_int(self):
+		"""Consumers gate on this. It must exist, be an int, and never silently vanish.
+
+		klik_pos treats its ABSENCE as version 1 — the pre-manifest contract — so deleting or
+		renaming this constant would make every consumer report the app as too old rather than
+		failing loudly. That is the safe direction, but only if the constant is here.
+		"""
+		from cecypo_frappe_reports.cecypo_frappe_reports import statement_of_accounts as soa
+
+		self.assertIsInstance(soa.STATEMENT_API_VERSION, int)
+		self.assertGreaterEqual(soa.STATEMENT_API_VERSION, 2)
+
+	def test_bulk_api_shape_is_pinned(self):
+		"""Guard the consumer-facing contract, because the version bump is manual.
+
+		A changed return shape is invisible to a consumer resolving attributes — that is the
+		whole reason STATEMENT_API_VERSION exists — and it is also the easiest change to make
+		without realising anyone downstream cares. So the shape is pinned here, and the failure
+		message says what to do about it.
+
+		THIS TEST IS MEANT TO FAIL when the contract changes. That is its entire purpose: the
+		version bump is manual, and this converts "remember to bump" into "the suite stops you".
+		If you are here because a deliberate shape change broke this assertion, the fix is to
+		bump STATEMENT_API_VERSION and update consumers (klik_pos gates on it) — NOT to loosen
+		the assertion below. Loosening it would silently remove the only thing enforcing the
+		bump discipline.
+		"""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		tpl = self._make_template()
+
+		manifest = preview_bulk_statements(company=TEST_COMPANY, template=tpl.name)
+
+		self.assertEqual(
+			set(manifest),
+			{"in_scope", "with_email", "without_email", "not_permitted", "template", "as_of_date"},
+			"\n\nThe statement API contract changed. Bump STATEMENT_API_VERSION and update "
+			"consumers (klik_pos gates on it).",
+		)
+		self.assertEqual(
+			set(manifest["without_email"][0]) if manifest["without_email"] else {"customer", "customer_name"},
+			{"customer", "customer_name"},
+			"\n\nThe without_email row shape changed. Bump STATEMENT_API_VERSION and update "
+			"consumers.",
+		)
+
+		with patch("frappe.enqueue"):
+			result = email_bulk_statements(company=TEST_COMPANY, template=tpl.name)
+		self.assertEqual(
+			set(result),
+			{"batches"},
+			"\n\nemail_bulk_statements' return shape changed. Bump STATEMENT_API_VERSION and "
+			"update consumers.",
+		)
+
 	# ── batch worker ─────────────────────────────────────────────────────────
 
 	def test_narrow_statement_doc_narrows_to_exactly_the_given_customers(self):
@@ -1060,6 +1119,32 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		mock_sendmail.assert_called_once()
 		self.assertEqual(mock_sendmail.call_args.kwargs["sender"], frappe.session.user)
+
+	def test_send_statement_batch_exposes_recipients_in_the_header(self):
+		"""Mirrors ERPNext's own send_emails, which passes expose_recipients="header" so CC'd
+		people are visible in the mail header. Without this, a CC on the desk path is hidden
+		where the standard "Send Emails" button would show it."""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		tpl = self._make_template()
+		rows = [{"customer": TEST_CUSTOMER, "customer_name": "x"}]
+
+		with (
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts._resolve_recipients",
+				return_value=["good@example.com"],
+			),
+			patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts.get_pdf",
+				return_value=b"%PDF-fake",
+			),
+			patch("frappe.sendmail") as mock_sendmail,
+		):
+			_send_statement_batch(tpl.name, rows)
+
+		mock_sendmail.assert_called_once()
+		self.assertEqual(mock_sendmail.call_args.kwargs["expose_recipients"], "header")
 
 	# ── desk button endpoint ─────────────────────────────────────────────────
 
