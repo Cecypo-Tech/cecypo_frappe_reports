@@ -619,7 +619,7 @@ class TestStatementOfAccounts(IntegrationTestCase):
 	def test_statement_api_version_is_declared_and_an_int(self):
 		"""Consumers gate on this. It must exist, be an int, and never silently vanish.
 
-		klik_pos treats its ABSENCE as version 1 — the pre-manifest contract — so deleting or
+		A consumer treats its ABSENCE as version 1 — the pre-manifest contract — so deleting or
 		renaming this constant would make every consumer report the app as too old rather than
 		failing loudly. That is the safe direction, but only if the constant is here.
 		"""
@@ -639,14 +639,20 @@ class TestStatementOfAccounts(IntegrationTestCase):
 		THIS TEST IS MEANT TO FAIL when the contract changes. That is its entire purpose: the
 		version bump is manual, and this converts "remember to bump" into "the suite stops you".
 		If you are here because a deliberate shape change broke this assertion, the fix is to
-		bump STATEMENT_API_VERSION and update consumers (klik_pos gates on it) — NOT to loosen
-		the assertion below. Loosening it would silently remove the only thing enforcing the
-		bump discipline.
+		bump STATEMENT_API_VERSION and update consumers — NOT to loosen the assertion below.
+		Loosening it (including reintroducing an escape hatch for an empty without_email list)
+		would silently remove the only thing enforcing the bump discipline.
 		"""
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 
+		# Two transacting customers, only one with an address, so with_email AND without_email are
+		# both non-empty below — a fixture that leaves without_email empty would let the row-shape
+		# assertion pass vacuously no matter what that row looks like.
 		create_sales_invoice(customer=TEST_CUSTOMER, rate=500)
+		create_sales_invoice(customer=OTHER_CUSTOMER, rate=500)
 		frappe.db.set_value("Customer", TEST_CUSTOMER, "email_id", "primary@example.com")
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "email_id", None)
+		frappe.db.set_value("Customer", OTHER_CUSTOMER, "customer_primary_contact", None)
 		tpl = self._make_template()
 
 		manifest = preview_bulk_statements(company=TEST_COMPANY, template=tpl.name)
@@ -655,10 +661,15 @@ class TestStatementOfAccounts(IntegrationTestCase):
 			set(manifest),
 			{"in_scope", "with_email", "without_email", "not_permitted", "template", "as_of_date"},
 			"\n\nThe statement API contract changed. Bump STATEMENT_API_VERSION and update "
-			"consumers (klik_pos gates on it).",
+			"consumers.",
+		)
+		self.assertTrue(
+			manifest["without_email"],
+			"\n\nFixture bug: without_email is empty, so the row-shape assertion below would test "
+			"nothing. The fixture must leave at least one in-scope customer without an address.",
 		)
 		self.assertEqual(
-			set(manifest["without_email"][0]) if manifest["without_email"] else {"customer", "customer_name"},
+			set(manifest["without_email"][0]),
 			{"customer", "customer_name"},
 			"\n\nThe without_email row shape changed. Bump STATEMENT_API_VERSION and update "
 			"consumers.",

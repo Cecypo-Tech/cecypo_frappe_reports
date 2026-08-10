@@ -33,7 +33,8 @@ PSOA = "Process Statement Of Accounts"
 # The contract this module offers its consumers, independent of the app's own version.
 #
 # Bump this whenever a consumer could break: a whitelisted function removed or renamed, a
-# parameter removed, or a RETURN SHAPE changed. A return-shape change is the one that motivated
+# parameter removed, a new REQUIRED parameter added (one with no default, so existing callers
+# stop working), or a RETURN SHAPE changed. A return-shape change is the one that motivated
 # this constant — preview_bulk_statements once returned will_send/no_email and now returns
 # in_scope/with_email, and no amount of attribute resolution can tell those apart.
 #
