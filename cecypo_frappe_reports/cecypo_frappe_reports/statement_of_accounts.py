@@ -72,8 +72,11 @@ def _assert_template_usable(template, company):
 	return tpl
 
 
-def _build_statement_doc(customer, company, template, as_of_date=None):
+def _build_statement_doc(customer, company, template, as_of_date=None, from_date=None):
 	"""Clone `template` in memory, narrowed to `customer`, dated `as_of_date`.
+
+	`as_of_date` is the end of the period for every report type. `from_date` is the start of a
+	General Ledger window and is ignored for Accounts Receivable, which has no start.
 
 	The single point where PSOA semantics are encoded, so there is exactly one place for the clone,
 	the permission checks and the date mapping to be wrong. The returned doc is never saved.
@@ -98,11 +101,21 @@ def _build_statement_doc(customer, company, template, as_of_date=None):
 	)
 
 	# PSOA stores the AR as-on date in posting_date but the GL window in from_date/to_date, so the
-	# dialog's single "As of" input has to fork on the template's report type.
+	# date mapping forks on the template's report type. A caller that knows only one date (klik_pos)
+	# omits from_date and gets the template's own filter_duration window, as it always has.
 	as_of = getdate(as_of_date or today())
 	if doc.report == "General Ledger":
 		doc.to_date = as_of
-		doc.from_date = add_months(as_of, -1 * (doc.filter_duration or 12))
+		doc.from_date = (
+			getdate(from_date) if from_date else add_months(as_of, -1 * (doc.filter_duration or 12))
+		)
+		# The dialog blocks this too, but no caller here can be trusted for it.
+		if doc.from_date > doc.to_date:
+			frappe.throw(
+				_("From Date {0} cannot be after To Date {1}").format(
+					frappe.bold(doc.from_date), frappe.bold(doc.to_date)
+				)
+			)
 	else:
 		doc.posting_date = as_of
 
@@ -429,13 +442,13 @@ def get_default_recipient(party_type, party):
 
 
 @frappe.whitelist()
-def render_statement_html(customer, company, template, as_of_date=None):
+def render_statement_html(customer, company, template, as_of_date=None, from_date=None):
 	"""Statement HTML for the dialog preview.
 
 	Deliberately separate from the PDF path: preview never invokes wkhtmltopdf, so a broken PDF
 	toolchain still lets users see the statement and diagnose.
 	"""
-	return _render_html(_build_statement_doc(customer, company, template, as_of_date))
+	return _render_html(_build_statement_doc(customer, company, template, as_of_date, from_date))
 
 
 def _customers_with_any_email(customer_names):
@@ -556,8 +569,8 @@ def email_bulk_statements(company, template, as_of_date=None):
 
 
 @frappe.whitelist()
-def download_statement(customer, company, template, as_of_date=None):
-	doc = _build_statement_doc(customer, company, template, as_of_date)
+def download_statement(customer, company, template, as_of_date=None, from_date=None):
+	doc = _build_statement_doc(customer, company, template, as_of_date, from_date)
 	pdf = _render_pdf(doc)
 
 	frappe.local.response.filename = _statement_filename(doc, customer)
@@ -566,13 +579,16 @@ def download_statement(customer, company, template, as_of_date=None):
 
 
 @frappe.whitelist()
-def email_statement(customer, company, template, as_of_date=None, recipient=None, cc="", bcc=""):
+def email_statement(
+	customer, company, template, as_of_date=None, recipient=None, cc="", bcc="", from_date=None
+):
 	"""Send the statement as a PDF attachment.
 
 	Takes the statement's identity rather than its content: the HTML is rendered server-side from
-	(customer, company, template, date) and never accepted from the client.
+	(customer, company, template, dates) and never accepted from the client. `from_date` is last so
+	positional callers written before it existed keep working.
 	"""
-	doc = _build_statement_doc(customer, company, template, as_of_date)
+	doc = _build_statement_doc(customer, company, template, as_of_date, from_date)
 
 	recipients = _split_emails(recipient) or _resolve_recipients(customer)
 	if not recipients:
