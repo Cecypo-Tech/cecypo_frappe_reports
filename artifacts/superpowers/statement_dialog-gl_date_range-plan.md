@@ -104,6 +104,31 @@ Branch: `feat/statement-gl-date-range` off `main`.
 7. **Land**: merge into `main`. I will **ask before pushing**, because this app isn't on the
    standing push list in CLAUDE.md.
 
+## Follow-up: the dialog change never reached the browser (2026-09-11)
+
+**Symptom (user):** a GL statement still showed the 30 days before the selected date, not a window
+starting on the first day of the previous month.
+
+**Root cause:** dev.cecypo.tech is behind Cloudflare. The edge served the **5 Aug**
+`statement_dialog.js` (14,844 bytes, `cf-cache-status: HIT`, no `from_date`), while the origin on
+:8000 served the new one (17,758 bytes). The old dialog sends no `from_date`, so the server correctly
+fell back to `filter_duration` (1 month on "GL"). Frappe's `bundled_asset()` only versions
+`.bundle.` paths, so the plain `/assets/...` entries in `hooks.py` never change URL; nginx also sends
+`max-age=31536000` for `/assets`.
+
+**Proof:** `...statement_dialog.js?v=probe-<ts>` through Cloudflare → `MISS`, 17,758 bytes, new code.
+
+**Fix plan (mini)**
+1. Failing test `tests/test_hooks.py`: every `app_include_js`/`app_include_css` entry carries
+   `?v=<file mtime>`.
+2. `hooks.py`: an `_asset_version()` helper, following `frappe_whatsapp_evo/hooks.py`.
+3. Verify: the test passes; `frappe.get_hooks("app_include_js")` returns versioned paths after the
+   web workers reload; the versioned URL through Cloudflare is a `MISS` with the new code; the user
+   reloads the desk and a GL statement starts on 2026-08-01.
+
+Limitation: hooks load once per web worker, so after a JS-only edit the version refreshes on the next
+worker restart (`bench restart`, or the dev server's reload when a `.py` file changes).
+
 ## Open question for approval
 
 When a caller sends no `from_date` (klik_pos POS today), should the server fallback **stay** at
