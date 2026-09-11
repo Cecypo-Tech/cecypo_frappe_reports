@@ -1,9 +1,30 @@
+import os
+
+from . import __version__ as app_version
+
 app_name = "cecypo_frappe_reports"
 app_title = "Cecypo Frappe Reports"
 app_publisher = "Cecypo.Tech"
 app_description = "Custom reports pack"
 app_email = "support@cecypo.tech"
 app_license = "agpl-3.0"
+
+
+def _asset_version(path):
+	"""`path` with its file's mtime appended as `?v=`, so an edit changes the URL.
+
+	Frappe only versions ".bundle." paths (frappe.utils.jinja_globals.bundled_asset); a plain /assets
+	path is served unchanged. nginx sends max-age=31536000 for /assets and dev.cecypo.tech sits behind
+	Cloudflare, so an unversioned include kept serving a month-old statement_dialog.js after it changed.
+	Hooks load once per web worker, so the version refreshes when workers restart.
+	"""
+	relative = path.removeprefix(f"/assets/{app_name}/")
+	try:
+		version = int(os.path.getmtime(os.path.join(os.path.dirname(__file__), "public", relative)))
+	except OSError:
+		version = app_version
+	return f"{path}?v={version}"
+
 
 # Apps
 # ------------------
@@ -25,13 +46,13 @@ app_license = "agpl-3.0"
 # ------------------
 
 # include js, css files in header of desk.html
-app_include_css = "/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css"
+app_include_css = _asset_version("/assets/cecypo_frappe_reports/css/cecypo_frappe_reports.css")
 app_include_js = [
-	"/assets/cecypo_frappe_reports/js/best_fit.js",
-	"/assets/cecypo_frappe_reports/js/sortable_table.js",
+	_asset_version("/assets/cecypo_frappe_reports/js/best_fit.js"),
+	_asset_version("/assets/cecypo_frappe_reports/js/sortable_table.js"),
 	# statement_dialog must precede report_statement_button, which calls into it.
-	"/assets/cecypo_frappe_reports/js/statement_dialog.js",
-	"/assets/cecypo_frappe_reports/js/report_statement_button.js",
+	_asset_version("/assets/cecypo_frappe_reports/js/statement_dialog.js"),
+	_asset_version("/assets/cecypo_frappe_reports/js/report_statement_button.js"),
 ]
 
 # include js, css files in header of web template

@@ -73,13 +73,13 @@ Both new JS files are added to `app_include_js` in `hooks.py`.
 ### Backend interface
 
 ```python
-def _build_statement_doc(customer, company, template, as_of_date) -> Document   # private
+def _build_statement_doc(customer, company, template, as_of_date, from_date=None) -> Document   # private
 @frappe.whitelist() def get_statement_templates(company) -> list[dict]
 @frappe.whitelist() def get_default_recipient(party_type, party) -> str
-@frappe.whitelist() def render_statement_html(customer, company, template, as_of_date) -> str
-@frappe.whitelist() def download_statement(customer, company, template, as_of_date) -> None
+@frappe.whitelist() def render_statement_html(customer, company, template, as_of_date, from_date=None) -> str
+@frappe.whitelist() def download_statement(customer, company, template, as_of_date, from_date=None) -> None
 @frappe.whitelist() def email_statement(customer, company, template, as_of_date,
-                                        recipient, cc="", bcc="") -> bool
+                                        recipient, cc="", bcc="", from_date=None) -> bool
 ```
 
 `_build_statement_doc` is the single point where PSOA semantics are encoded. `get_default_recipient` is the one endpoint that does not go through it — it only prefills the
@@ -89,12 +89,21 @@ place where the clone, the permission checks, and the date mapping can be wrong.
 
 ### Date mapping
 
-The dialog offers one "As of" input, but PSOA stores the date differently per report type:
+PSOA stores the date differently per report type, so the dialog's date inputs follow the selected
+template (updated 2026-09-11, see `statement_dialog-gl_date_range-plan.md`):
 
-- `report == "Accounts Receivable"` → `posting_date = as_of_date`
-- `report == "General Ledger"` → `to_date = as_of_date`, `from_date = as_of_date − filter_duration` months
+| Mode | Dialog fields | Server mapping |
+|---|---|---|
+| Statement, `report == "General Ledger"` | From Date, To Date | `from_date = from_date`, `to_date = as_of_date` |
+| Statement, `report == "Accounts Receivable"` | Posting Date | `posting_date = as_of_date`, `from_date` ignored |
+| Transaction list | As of | n/a |
 
-`filter_duration` comes from the template record, so a template configured for a 3-month window keeps it.
+`as_of_date` is the period end in every mode — one field relabelled, so switching Document keeps the
+date. From Date defaults to the first day of the month before the period end. A missing From Date, or
+one after To Date, blocks the actions client-side; the server also throws on `from_date > to_date`.
+
+A caller that omits `from_date` (klik_pos) keeps the original GL window:
+`from_date = as_of_date − filter_duration` months, from the template record.
 
 ### Dialog
 
@@ -204,7 +213,9 @@ read that party's data can trigger a send.
 **Doc construction** (no PDF, fast):
 - clone carries exactly one customer row regardless of what the template held
 - AR template sets `posting_date` and leaves `from_date`/`to_date` alone
-- GL template sets `to_date` and derives `from_date` from `filter_duration`
+- GL template sets `to_date`; honours an explicit `from_date`, else derives it from `filter_duration`
+- GL `from_date` after `to_date` throws; AR ignores `from_date`
+- all three single-customer endpoints forward `from_date` to the built doc
 - clone is `is_new()`, and the template record on disk is unchanged afterwards
 - company mismatch throws; unknown template throws
 

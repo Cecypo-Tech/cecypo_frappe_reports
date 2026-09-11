@@ -16,6 +16,7 @@ from cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts import (
 	_narrow_statement_doc,
 	_resolve_recipients,
 	_send_statement_batch,
+	download_statement,
 	email_bulk_statements,
 	email_statement,
 	enqueue_statement_batches,
@@ -149,7 +150,8 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		self.assertEqual(getdate(doc.posting_date), getdate(as_of))
 
-	def test_gl_template_maps_as_of_date_to_window_from_filter_duration(self):
+	def test_gl_template_without_from_date_keeps_filter_duration_fallback(self):
+		"""Callers that only know one date (klik_pos) must keep getting the template's own window."""
 		tpl = self._make_template(report="General Ledger", filter_duration=3)
 		as_of = "2026-03-31"
 
@@ -157,6 +159,53 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		self.assertEqual(getdate(doc.to_date), getdate(as_of))
 		self.assertEqual(getdate(doc.from_date), getdate(add_months(as_of, -3)))
+
+	def test_gl_template_honours_explicit_from_date(self):
+		tpl = self._make_template(report="General Ledger", filter_duration=3)
+
+		doc = _build_statement_doc(
+			TEST_CUSTOMER, TEST_COMPANY, tpl.name, "2026-03-31", from_date="2026-02-01"
+		)
+
+		self.assertEqual(getdate(doc.from_date), getdate("2026-02-01"))
+		self.assertEqual(getdate(doc.to_date), getdate("2026-03-31"))
+
+	def test_gl_template_rejects_from_date_after_to_date(self):
+		tpl = self._make_template(report="General Ledger")
+
+		with self.assertRaises(frappe.ValidationError):
+			_build_statement_doc(TEST_CUSTOMER, TEST_COMPANY, tpl.name, "2026-03-01", from_date="2026-03-02")
+
+	def test_ar_template_ignores_from_date(self):
+		tpl = self._make_template(report="Accounts Receivable")
+
+		doc = _build_statement_doc(
+			TEST_CUSTOMER, TEST_COMPANY, tpl.name, "2026-03-31", from_date="2026-04-15"
+		)
+
+		self.assertEqual(getdate(doc.posting_date), getdate("2026-03-31"))
+		self.assertEqual(getdate(doc.from_date), getdate(tpl.from_date))
+
+	def test_single_statement_endpoints_forward_from_date(self):
+		"""The dialog's From Date has to reach the rendered doc on all three paths, not just preview."""
+		module = "cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts"
+		tpl = self._make_template(report="General Ledger")
+		args = (TEST_CUSTOMER, TEST_COMPANY, tpl.name, "2026-03-31")
+		seen = []
+
+		def capture(result):
+			return lambda doc: seen.append(getdate(doc.from_date)) or result
+
+		with (
+			patch(f"{module}._render_html", side_effect=capture("<html></html>")),
+			patch(f"{module}._render_pdf", side_effect=capture(b"%PDF")),
+			patch("frappe.sendmail"),
+		):
+			render_statement_html(*args, from_date="2026-02-01")
+			download_statement(*args, from_date="2026-02-01")
+			email_statement(*args, recipient="ar@example.com", from_date="2026-02-01")
+
+		self.assertEqual(seen, [getdate("2026-02-01")] * 3)
 
 	def test_as_of_date_defaults_to_today(self):
 		tpl = self._make_template()

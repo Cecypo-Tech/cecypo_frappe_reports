@@ -25,6 +25,9 @@
 	const DOC_STATEMENT = "statement";
 	const DOC_TRANSACTION_LIST = "transaction_list";
 
+	// The one PSOA report whose period is a window (from_date..to_date) rather than an as-on date.
+	const GL_REPORT = "General Ledger";
+
 	class StatementDialog {
 		/**
 		 * @param {object}   opts
@@ -141,15 +144,7 @@
 				},
 			});
 
-			fields.push({
-				fieldname: "as_of_date",
-				fieldtype: "Date",
-				label: __("As of"),
-				default: this.opts.as_of_date || frappe.datetime.get_today(),
-				reqd: 1,
-				onchange: on_input_change,
-			});
-
+			// Template comes before the dates because the template decides which dates apply.
 			if (this.supports_statement) {
 				fields.push({
 					fieldname: "template",
@@ -161,6 +156,28 @@
 				});
 				fields.push({ fieldname: "template_hint", fieldtype: "HTML" });
 			}
+
+			// as_of_date is the end of the period in every mode, relabelled by _sync_date_fields as To
+			// Date (GL), Posting Date (AR) or As of (transaction list). One field rather than three is
+			// what lets switching Document keep the date the user picked.
+			const period_end = this.opts.as_of_date || frappe.datetime.get_today();
+			fields.push({
+				fieldname: "from_date",
+				fieldtype: "Date",
+				label: __("From Date"),
+				// First day of the previous month: the whole of last month plus this month so far.
+				default: moment(period_end).subtract(1, "months").startOf("month").format("YYYY-MM-DD"),
+				hidden: 1,
+				onchange: on_input_change,
+			});
+			fields.push({
+				fieldname: "as_of_date",
+				fieldtype: "Date",
+				label: __("As of"),
+				default: period_end,
+				reqd: 1,
+				onchange: on_input_change,
+			});
 
 			fields.push({
 				fieldname: "recipient",
@@ -192,10 +209,12 @@
 				this._render_template_hint(is_statement);
 			}
 
+			this._sync_date_fields();
 			this._render_cc_toggle();
 
-			// Statement mode needs a template; without one there is nothing to render.
-			const blocked = is_statement && !d.get_value("template");
+			// Statement mode needs a template, and a GL statement a valid window; without either there
+			// is nothing to render.
+			const blocked = (is_statement && !d.get_value("template")) || Boolean(this._date_problem());
 			d.get_primary_btn().prop("disabled", blocked);
 
 			const email_btn = d.get_secondary_btn();
@@ -243,10 +262,49 @@
 			});
 		}
 
+		_sync_date_fields() {
+			const is_gl = this._is_gl();
+			const mode = is_gl ? "gl" : this._is_statement() ? "ar" : "list";
+			// set_df_property re-renders the control, so only touch it when the mode actually changes.
+			if (mode === this._date_mode) return;
+			this._date_mode = mode;
+
+			const d = this.dialog;
+			d.set_df_property("from_date", "hidden", is_gl ? 0 : 1);
+			d.set_df_property("from_date", "reqd", is_gl ? 1 : 0);
+			d.set_df_property(
+				"as_of_date",
+				"label",
+				{ gl: __("To Date"), ar: __("Posting Date"), list: __("As of") }[mode]
+			);
+		}
+
 		_is_statement() {
 			if (!this.supports_statement) return false;
 			if (!this.transaction_list) return true;
 			return this.dialog.get_value("document_type") === DOC_STATEMENT;
+		}
+
+		_template_report() {
+			const name = this.dialog.get_value("template");
+			const tpl = this.templates.find((t) => t.name === name);
+			return tpl ? tpl.report : null;
+		}
+
+		_is_gl() {
+			return this._is_statement() && this._template_report() === GL_REPORT;
+		}
+
+		// Why the current dates cannot produce a statement, or null. Only a GL window has a start,
+		// so only it can be missing one or be out of order. A missing start must block rather than
+		// be sent empty: the server would quietly fall back to the template's filter_duration.
+		_date_problem() {
+			if (!this._is_gl()) return null;
+			const from = this.dialog.get_value("from_date");
+			const to = this.dialog.get_value("as_of_date");
+			if (!from) return __("Select a From Date to preview.");
+			if (to && from > to) return __("From Date must be on or before To Date.");
+			return null;
 		}
 
 		_context() {
@@ -255,8 +313,22 @@
 				party_type: this.party_type,
 				company: this.opts.company,
 				as_of_date: this.dialog.get_value("as_of_date"),
+				from_date: this._is_gl() ? this.dialog.get_value("from_date") : null,
 				template: this.dialog.get_value("template"),
 			};
+		}
+
+		// The statement's identity as the server endpoints take it. from_date is omitted unless it
+		// applies, so a non-GL call is exactly what it was before the field existed.
+		_statement_args(ctx) {
+			const args = {
+				customer: ctx.party,
+				company: ctx.company,
+				template: ctx.template,
+				as_of_date: ctx.as_of_date,
+			};
+			if (ctx.from_date) args.from_date = ctx.from_date;
+			return args;
 		}
 
 		// ── Preview ──────────────────────────────────────────────────────────
@@ -283,6 +355,11 @@
 			}
 			if (this._is_statement() && !ctx.template) {
 				this._set_preview_message(__("Select a statement template to preview."));
+				return;
+			}
+			const date_problem = this._date_problem();
+			if (date_problem) {
+				this._set_preview_message(date_problem);
 				return;
 			}
 
@@ -324,15 +401,15 @@
 				return;
 			}
 
+			// The buttons are disabled in this state, but a dialog's primary action has a keyboard path.
+			if (this._date_problem()) return;
+
 			this._remember_template(ctx.template);
 			// A "download" response is a file, not JSON, so it cannot go through frappe.call.
 			// open_url_post posts a form (CSRF token included) and lets the browser save the result.
 			open_url_post(frappe.request.url, {
 				cmd: METHOD + "download_statement",
-				customer: ctx.party,
-				company: ctx.company,
-				template: ctx.template,
-				as_of_date: ctx.as_of_date,
+				...this._statement_args(ctx),
 			});
 			this.dialog.hide();
 		}
@@ -354,15 +431,14 @@
 				return;
 			}
 
+			if (this._date_problem()) return;
+
 			this._remember_template(ctx.template);
 			this.dialog.hide();
 			frappe.call({
 				method: METHOD + "email_statement",
 				args: {
-					customer: ctx.party,
-					company: ctx.company,
-					template: ctx.template,
-					as_of_date: ctx.as_of_date,
+					...this._statement_args(ctx),
 					recipient,
 					cc,
 					bcc,
@@ -380,12 +456,7 @@
 
 		_fetch_statement_html(ctx) {
 			return frappe
-				.xcall(METHOD + "render_statement_html", {
-					customer: ctx.party,
-					company: ctx.company,
-					template: ctx.template,
-					as_of_date: ctx.as_of_date,
-				})
+				.xcall(METHOD + "render_statement_html", this._statement_args(ctx))
 				.then((html) => html || "");
 		}
 
