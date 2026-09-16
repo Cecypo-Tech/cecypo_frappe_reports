@@ -612,13 +612,17 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			get_balance_basis, get_party_details, get_receivables, get_receivables_detail,
 		)
 
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+
 		si = self._overdue_invoice()
+
+		pe = create_payment_entry(
+			payment_type="Receive", party_type="Customer", party="_Test Customer",
+			paid_from="Debtors - _TC", paid_to="_Test Cash - _TC", paid_amount=600, save=True,
+		)
+		pe.submit()
+
 		email = self._as_sales_only_user()
-		# This site's Sales User role has a Custom DocPerm with if_owner=1 on Sales Invoice
-		# (see cecypo_powerpack's Permission Manager notes), unlike a stock ERPNext site
-		# where Sales User reads any Sales Invoice. Own the fixture invoice so it is visible
-		# to this user under that scoping — the fallback must still respect it either way.
-		frappe.db.set_value("Sales Invoice", si.name, "owner", email)
 		frappe.set_user(email)
 		try:
 			self.assertFalse(frappe.has_permission("Journal Entry", "read"))
@@ -633,6 +637,7 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			d = get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
 			self.assertEqual(d["basis"], "invoices")
 			self.assertIn(si.name, [r["voucher_no"] for r in d["invoices"]])
+			self.assertIn(pe.name, [a["name"] for a in d["advances"]])
 			self.assertNotIn("annual_billing", d["stats"])
 		finally:
 			frappe.set_user("Administrator")
@@ -673,5 +678,41 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		try:
 			rows = get_receivables(company="_Test Company", as_of_date=frappe.utils.today())
 			self.assertNotIn("_Test Customer", [r["customer"] for r in rows])
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_fallback_respects_company_user_permission(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_party_details, get_receivables,
+		)
+
+		self._overdue_invoice()
+		email = self._as_sales_only_user()
+		if not frappe.db.exists("Company", "_Test Company 1"):
+			self.skipTest("_Test Company 1 missing")
+		frappe.get_doc({
+			"doctype": "User Permission", "user": email, "allow": "Company", "for_value": "_Test Company 1",
+		}).insert(ignore_permissions=True)
+		frappe.set_user(email)
+		try:
+			self.assertEqual(get_receivables(company="_Test Company", as_of_date=frappe.utils.today()), [])
+			with self.assertRaises(frappe.PermissionError):
+				get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_party_details_refuses_a_customer_outside_user_permissions(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import get_party_details
+
+		email = self._as_sales_only_user()
+		if not frappe.db.exists("Customer", "_Test Customer 1"):
+			self.skipTest("_Test Customer 1 missing")
+		frappe.get_doc({
+			"doctype": "User Permission", "user": email, "allow": "Customer", "for_value": "_Test Customer 1",
+		}).insert(ignore_permissions=True)
+		frappe.set_user(email)
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
 		finally:
 			frappe.set_user("Administrator")

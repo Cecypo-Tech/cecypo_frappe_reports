@@ -1548,7 +1548,7 @@ class TransactionHistoryPage {
 	// ── Shared: invoice-based fallback basis note ───────────────────────────────
 
 	_basis_note_html() {
-		return `<div class="text-muted" style="font-size:11px;margin-top:6px">${__("Based on invoices and payments only; journal entry adjustments are not included.")}</div>`;
+		return `<div class="text-muted" style="font-size:11px;margin-top:6px">${__("Based on invoices and payments; journal entry adjustments are not included.")}</div>`;
 	}
 
 	_get_balance_basis() {

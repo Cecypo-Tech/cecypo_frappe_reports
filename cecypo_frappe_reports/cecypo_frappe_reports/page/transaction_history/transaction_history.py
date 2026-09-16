@@ -440,6 +440,10 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 	from frappe.utils import getdate, nowdate
 
 	frappe.has_permission("Sales Invoice" if party_type.lower() == "customer" else "Purchase Invoice", "read", throw=True)
+	frappe.has_permission("Customer" if party_type.lower() == "customer" else "Supplier", "read", doc=party, throw=True)
+	allowed_companies = _allowed_values("Company")
+	if company and allowed_companies is not None and company not in allowed_companies:
+		frappe.throw(_("Not permitted for company {0}").format(company), frappe.PermissionError)
 
 	is_customer = party_type.lower() == "customer"
 	doctype = "Customer" if is_customer else "Supplier"
@@ -766,6 +770,14 @@ def uses_invoice_basis():
 	return not frappe.has_permission("Journal Entry", "read")
 
 
+def _allowed_values(doctype):
+	"""None when the user has no User Permission rows for doctype, else the allowed names."""
+	from frappe.core.doctype.user_permission.user_permission import get_user_permissions
+
+	rows = get_user_permissions().get(doctype)
+	return None if not rows else {r.get("doc") for r in rows}
+
+
 AGEING_RANGES = (30, 60, 90, 120)  # ERPNext's default "30, 60, 90, 120"
 
 
@@ -785,9 +797,12 @@ def _ageing(row, entry_date, as_of):
 def _invoice_based_report(party_type, filters):
 	"""Rows shaped like ERPNext's AR/AP report `data`, from invoices and Payment Entries.
 
-	Uses frappe.get_list, so the user's own permissions and User Permissions apply.
-	Outstanding is each invoice's current outstanding_amount (not recomputed as of
-	report_date), and journal-entry adjustments are not included.
+	Shows the party's full position — every invoice and unallocated advance — even to a
+	role scoped to its own invoices or without Payment Entry read (e.g. Sales User),
+	since that scoping does not apply to what a customer/party dialog is meant to show.
+	Company and party User Permissions are honoured explicitly below instead. Outstanding
+	is each invoice's current outstanding_amount (not recomputed as of report_date), and
+	journal-entry adjustments are not included.
 	"""
 	is_customer = party_type == "Customer"
 	inv_doctype = "Sales Invoice" if is_customer else "Purchase Invoice"
@@ -795,16 +810,25 @@ def _invoice_based_report(party_type, filters):
 	group_field = "customer_group" if is_customer else "supplier_group"
 	as_of = getdate(filters.get("report_date"))
 
+	allowed_companies = _allowed_values("Company")
+	if allowed_companies is not None and filters.get("company") not in allowed_companies:
+		return [], []
+	parties = filters.get("party")
+	allowed_parties = _allowed_values(party_type)
+	if allowed_parties is not None:
+		parties = [p for p in (parties or allowed_parties) if p in allowed_parties]
+		if not parties:
+			return [], []
+
 	inv_filters = {
 		"docstatus": 1,
 		"company": filters.get("company"),
 		"posting_date": ["<=", as_of],
 		"outstanding_amount": ["!=", 0],
 	}
-	parties = filters.get("party")
 	if parties:
 		inv_filters[party_field] = ["in", parties]
-	invoices = frappe.get_list(
+	invoices = frappe.get_all(
 		inv_doctype,
 		filters=inv_filters,
 		fields=["name", party_field, "posting_date", "due_date", "grand_total", "rounded_total", "outstanding_amount"],
@@ -821,19 +845,11 @@ def _invoice_based_report(party_type, filters):
 	}
 	if parties:
 		pe_filters["party"] = ["in", parties]
-	# A role that can see its own Sales/Purchase Invoices (e.g. Sales User) does not
-	# necessarily have read on Payment Entry. Degrade to invoice-only rows rather than
-	# raising — invoice outstanding_amount already nets allocated payments; only
-	# unallocated-advance rows are lost.
-	payments = (
-		frappe.get_list(
-			"Payment Entry",
-			filters=pe_filters,
-			fields=["name", "party", "posting_date", "paid_amount", "unallocated_amount"],
-			order_by="posting_date asc",
-		)
-		if frappe.has_permission("Payment Entry", "read")
-		else []
+	payments = frappe.get_all(
+		"Payment Entry",
+		filters=pe_filters,
+		fields=["name", "party", "posting_date", "paid_amount", "unallocated_amount"],
+		order_by="posting_date asc",
 	)
 
 	groups = {}
