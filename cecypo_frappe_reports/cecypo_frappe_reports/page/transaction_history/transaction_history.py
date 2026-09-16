@@ -587,7 +587,10 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 		invoices.sort(key=lambda r: (-int(r.get("days_overdue") or 0), str(r.get("due_date") or r.get("date"))))
 	overdue = [r for r in invoices if (r.get("days_overdue") or 0) > 0]
 	overdue_total = flt(sum(r["outstanding_amount"] for r in overdue), 2)
-	outstanding_total = flt(stats.get("total_unpaid") or 0, 2)
+	if company:
+		outstanding_total = flt(sum(r["outstanding_amount"] for r in invoices), 2)
+	else:
+		outstanding_total = flt(stats.get("total_unpaid") or 0, 2)
 	advances_total = flt(sum(r["unallocated_amount"] for r in adv_rows), 2)
 
 	return {

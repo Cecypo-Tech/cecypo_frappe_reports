@@ -559,3 +559,28 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError):
 				self._details(party_type="supplier", party="_Test Supplier")
 		self.assertEqual(perm.call_args_list[0].args[:2], ("Purchase Invoice", "read"))
+
+	def test_outstanding_total_is_invoices_only_and_net_position_nets_once(self):
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
+		si = create_sales_invoice(customer="_Test Customer", company="_Test Company", rate=400, qty=1, do_not_save=True)
+		si.set_posting_time = 1
+		si.posting_date = add_days(today(), -5)
+		si.due_date = add_days(today(), 10)
+		si.insert()
+		si.submit()
+		pe = create_payment_entry(
+			payment_type="Receive", party_type="Customer", party="_Test Customer",
+			paid_from="Debtors - _TC", paid_to="_Test Cash - _TC", paid_amount=900, save=True,
+		)
+		pe.submit()
+
+		d = self._details()
+		self.assertEqual(d["outstanding_total"], round(sum(r["outstanding_amount"] for r in d["invoices"]), 2))
+		self.assertGreaterEqual(d["outstanding_total"], 400)
+		self.assertGreaterEqual(d["advances_total"], 900)
+		self.assertEqual(d["net_position"], round(d["outstanding_total"] - d["advances_total"], 2))
+		# stats.total_unpaid stays the grid's netted figure
+		self.assertLess(d["stats"]["total_unpaid"], d["outstanding_total"])
