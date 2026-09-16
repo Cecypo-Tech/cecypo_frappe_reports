@@ -6,6 +6,20 @@ from frappe import _
 from frappe.utils import cint, flt, getdate
 from pypika import functions as fn
 
+BILLING_STATS_ROLES = {"Accounts Manager", "Sales Manager"}
+
+
+def _can_see_billing_stats():
+	return frappe.session.user == "Administrator" or bool(BILLING_STATS_ROLES & set(frappe.get_roles()))
+
+
+def _highlight_for(overdue_count, outstanding_total, advances_total):
+	if overdue_count > 0:
+		return "red"
+	if flt(outstanding_total) > 0 or flt(advances_total) > 0:
+		return "amber"
+	return ""
+
 
 @frappe.whitelist()
 def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
@@ -419,13 +433,17 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 	from pypika import Case
 	from frappe.utils import getdate, nowdate
 
+	frappe.has_permission("Sales Invoice" if party_type.lower() == "customer" else "Purchase Invoice", "read", throw=True)
+
 	is_customer = party_type.lower() == "customer"
 	doctype = "Customer" if is_customer else "Supplier"
 
 	# Core doc fields
 	doc = frappe.db.get_value(
 		doctype, party,
-		["name", "email_id", "mobile_no", "payment_terms", "tax_id"],
+		["name", "customer_name", "email_id", "mobile_no", "payment_terms", "tax_id"]
+		if is_customer
+		else ["name", "supplier_name", "email_id", "mobile_no", "payment_terms", "tax_id"],
 		as_dict=True,
 	) or {}
 
@@ -460,6 +478,19 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 		if c:
 			contacts.append(c)
 	contacts.sort(key=lambda x: x.get("is_primary_contact") or 0, reverse=True)
+
+	contacts_out = [
+		{
+			"name": " ".join(filter(None, [c.get("first_name"), c.get("last_name")])),
+			"email": c.get("email_id") or "",
+			"phone": c.get("mobile_no") or c.get("phone") or "",
+			"is_primary": int(c.get("is_primary_contact") or 0),
+		}
+		for c in contacts[:3]
+	]
+	primary_contact = next((c for c in contacts_out if c["email"] or c["phone"]), None)
+	if not primary_contact and (doc.get("email_id") or doc.get("mobile_no")):
+		primary_contact = {"name": doc.get("customer_name") or doc.get("supplier_name") or party, "email": doc.get("email_id") or "", "phone": doc.get("mobile_no") or ""}
 
 	# Account stats
 	today_dt = getdate(nowdate())
@@ -514,6 +545,10 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 		)
 		stats["total_unpaid"] = flt(balance_rows[0]["outstanding"], 2) if balance_rows else 0.0
 
+	if not _can_see_billing_stats():
+		stats.pop("annual_billing", None)
+		stats.pop("lifetime_billing", None)
+
 	# Credit limit (customer only, for the given company)
 	credit_limit = None
 	if is_customer and company:
@@ -543,23 +578,39 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 		r["paid_amount"] = flt(r["paid_amount"], 2)
 		r["unallocated_amount"] = flt(r["unallocated_amount"], 2)
 
-	unallocated_total = flt(sum(r["unallocated_amount"] for r in adv_rows), 2)
-
-	primary_email = (
-		next((c.get("email_id") for c in contacts if c.get("email_id")), None)
-		or doc.get("email_id")
-		or ""
-	)
+	invoices = []
+	if company:
+		invoices = _get_party_balance_detail(
+			party_type=doctype, company=company, as_of_date=as_of_date or nowdate(),
+			party=party, show_future_payments=show_future_payments,
+		)
+		invoices.sort(key=lambda r: (-int(r.get("days_overdue") or 0), str(r.get("due_date") or r.get("date"))))
+	overdue = [r for r in invoices if (r.get("days_overdue") or 0) > 0]
+	overdue_total = flt(sum(r["outstanding_amount"] for r in overdue), 2)
+	if company:
+		outstanding_total = flt(sum(r["outstanding_amount"] for r in invoices), 2)
+	else:
+		outstanding_total = flt(stats.get("total_unpaid") or 0, 2)
+	advances_total = flt(sum(r["unallocated_amount"] for r in adv_rows), 2)
 
 	return {
 		"doc": doc,
+		"customer_name": doc.get("customer_name") or doc.get("supplier_name") or party,
 		"address": address,
-		"contacts": contacts,
+		"contacts": contacts_out,
+		"primary_contact": primary_contact,
+		"primary_email": primary_contact["email"] if primary_contact else "",
+		"payment_terms": doc.get("payment_terms"),
 		"stats": stats,
 		"credit_limit": credit_limit,
-		"unallocated_payments": adv_rows,
-		"unallocated_total": unallocated_total,
-		"primary_email": primary_email,
+		"outstanding_total": outstanding_total,
+		"overdue_total": overdue_total,
+		"overdue_count": len(overdue),
+		"advances": adv_rows,
+		"advances_total": advances_total,
+		"net_position": flt(outstanding_total - advances_total, 2),
+		"invoices": invoices,
+		"highlight": _highlight_for(len(overdue), outstanding_total, advances_total),
 	}
 
 
@@ -724,7 +775,7 @@ def _get_party_balances(party_type, company, as_of_date, party=None, show_future
 		party_field: "", group_field: "",
 		"total_invoiced": 0.0, "total_paid": 0.0, "outstanding": 0.0,
 		"bucket_0_30": 0.0, "bucket_31_60": 0.0, "bucket_61_90": 0.0, "bucket_90_plus": 0.0,
-		"last_payment": None, "unallocated_advance": 0.0, "future_payments": 0.0,
+		"last_payment": None, "unallocated_advance": 0.0, "future_payments": 0.0, "overdue": 0.0,
 	})
 	for r in data or []:
 		name = r.get("party")
@@ -741,6 +792,11 @@ def _get_party_balances(party_type, company, as_of_date, party=None, show_future
 		a["bucket_61_90"] = flt(a["bucket_61_90"] + flt(r.get("range3") or 0), 2)
 		a["bucket_90_plus"] = flt(a["bucket_90_plus"] + flt(r.get("range4") or 0) + flt(r.get("range5") or 0), 2)
 		a["future_payments"] = flt(a["future_payments"] + flt(r.get("future_amount") or 0), 2)
+
+		if r.get("voucher_type") in ("Sales Invoice", "Purchase Invoice"):
+			due = r.get("due_date") or r.get("posting_date")
+			if due and getdate(due) < getdate(as_of_date) and flt(r.get("outstanding") or 0) > 0:
+				a["overdue"] = flt(a["overdue"] + flt(r.get("outstanding") or 0), 2)
 
 		if r.get("voucher_type") in ("Payment Entry", "Journal Entry"):
 			posting_date = getdate(r["posting_date"])

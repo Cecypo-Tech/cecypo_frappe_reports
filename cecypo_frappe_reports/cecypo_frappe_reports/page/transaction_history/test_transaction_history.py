@@ -463,3 +463,124 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		rows = get_receivables(company="_Test Company", as_of_date="2025-06-15", customer="_Test Customer")
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["customer"], "_Test Customer")
+
+	def _details(self, **kw):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_party_details,
+		)
+
+		args = {"party_type": "customer", "party": "_Test Customer", "company": "_Test Company", "as_of_date": frappe.utils.today()}
+		args.update(kw)
+		return get_party_details(**args)
+
+	def test_party_details_has_the_snapshot_shape(self):
+		d = self._details()
+		for key in (
+			"customer_name", "primary_contact", "contacts", "credit_limit", "payment_terms",
+			"outstanding_total", "overdue_total", "overdue_count", "advances_total", "net_position",
+			"invoices", "advances", "highlight", "stats",
+		):
+			self.assertIn(key, d, key)
+		self.assertNotIn("unallocated_payments", d)
+		self.assertNotIn("unallocated_total", d)
+		if d["invoices"]:
+			for key in ("voucher_no", "date", "due_date", "grand_total", "paid", "outstanding_amount", "days_overdue", "status"):
+				self.assertIn(key, d["invoices"][0], key)
+
+	def test_billing_stats_only_for_allowed_roles(self):
+		# Administrator holds every role, so stats are present.
+		d = self._details()
+		self.assertIn("annual_billing", d["stats"])
+		self.assertIn("lifetime_billing", d["stats"])
+		# A plain user sees neither.
+		from unittest.mock import patch
+
+		# "Accounts User" (not "Sales User") on purpose: get_party_details unconditionally
+		# calls into ERPNext's own Accounts Receivable report (_get_party_balances) for
+		# stats.total_unpaid, and that report does its own frappe.has_permission checks
+		# against Journal Entry/GL Entry — a role lacking those raises PermissionError
+		# before this test ever reaches the billing-stats assertion it cares about.
+		# "Accounts User" has full read on those doctypes by default but isn't in
+		# BILLING_STATS_ROLES, so it isolates the one thing under test.
+		with patch.object(frappe, "get_roles", return_value=["All", "Guest", "Accounts User"]):
+			# frappe.session is a LocalProxy wrapping a dict-subclass (_dict); patch.object's
+			# `target.__dict__[name]` lookup returns None through the proxy and raises
+			# TypeError before the patch even applies. patch.dict works directly against its
+			# dict protocol and restores cleanly on exit.
+			with patch.dict(frappe.session, {"user": "sales.user@example.com"}):
+				d2 = self._details()
+		self.assertNotIn("annual_billing", d2["stats"])
+		self.assertNotIn("lifetime_billing", d2["stats"])
+		self.assertIn("total_unpaid", d2["stats"])
+
+	def test_highlight_rule_and_overdue_from_invoices(self):
+		d = self._details()
+		overdue = [r for r in d["invoices"] if r["days_overdue"] > 0]
+		self.assertEqual(d["overdue_count"], len(overdue))
+		self.assertEqual(d["overdue_total"], round(sum(r["outstanding_amount"] for r in overdue), 2))
+		expected = "red" if overdue else ("amber" if d["outstanding_total"] > 0 or d["advances_total"] > 0 else "")
+		self.assertEqual(d["highlight"], expected)
+		self.assertEqual(d["net_position"], round(d["outstanding_total"] - d["advances_total"], 2))
+
+	def test_receivables_rows_carry_overdue(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_receivables,
+		)
+
+		si = create_sales_invoice(customer="_Test Customer", company="_Test Company", rate=300, qty=1, do_not_save=True)
+		si.set_posting_time = 1
+		si.posting_date = add_days(today(), -40)
+		si.due_date = add_days(today(), -10)
+		si.insert()
+		si.submit()
+
+		rows = get_receivables(company="_Test Company", as_of_date=today())
+		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
+		self.assertIsNotNone(row)
+		self.assertIn("overdue", row)
+		self.assertGreaterEqual(row["overdue"], 300)
+		for r in rows:
+			self.assertGreaterEqual(r["overdue"], 0)
+
+	def test_party_details_requires_invoice_read(self):
+		from unittest.mock import patch
+
+		with patch.object(frappe, "has_permission", side_effect=frappe.PermissionError) as perm:
+			with self.assertRaises(frappe.PermissionError):
+				self._details()
+		self.assertEqual(perm.call_args_list[0].args[:2], ("Sales Invoice", "read"))
+		self.assertTrue(perm.call_args_list[0].kwargs.get("throw"))
+		self.assertEqual(perm.call_count, 1)
+
+		with patch.object(frappe, "has_permission", side_effect=frappe.PermissionError) as perm:
+			with self.assertRaises(frappe.PermissionError):
+				self._details(party_type="supplier", party="_Test Supplier")
+		self.assertEqual(perm.call_args_list[0].args[:2], ("Purchase Invoice", "read"))
+
+	def test_outstanding_total_is_invoices_only_and_net_position_nets_once(self):
+		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
+		si = create_sales_invoice(customer="_Test Customer", company="_Test Company", rate=400, qty=1, do_not_save=True)
+		si.set_posting_time = 1
+		si.posting_date = add_days(today(), -5)
+		si.due_date = add_days(today(), 10)
+		si.insert()
+		si.submit()
+		pe = create_payment_entry(
+			payment_type="Receive", party_type="Customer", party="_Test Customer",
+			paid_from="Debtors - _TC", paid_to="_Test Cash - _TC", paid_amount=900, save=True,
+		)
+		pe.submit()
+
+		d = self._details()
+		self.assertEqual(d["outstanding_total"], round(sum(r["outstanding_amount"] for r in d["invoices"]), 2))
+		self.assertGreaterEqual(d["outstanding_total"], 400)
+		self.assertGreaterEqual(d["advances_total"], 900)
+		self.assertEqual(d["net_position"], round(d["outstanding_total"] - d["advances_total"], 2))
+		# stats.total_unpaid stays the grid's netted figure
+		self.assertLess(d["stats"]["total_unpaid"], d["outstanding_total"])

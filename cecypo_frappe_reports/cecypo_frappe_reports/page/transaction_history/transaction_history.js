@@ -120,7 +120,8 @@ class TransactionHistoryPage {
 				transition: color .1s, opacity .1s;
 			}
 			.th-party-info-btn:hover { color: var(--text-color); }
-			.th-party-info-btn.has-advance { color: var(--blue); }
+			.th-party-info-btn.is-amber { color: var(--orange-500, #f97316); }
+			.th-party-info-btn.is-red { color: var(--red-500); }
 			.th-btn-wrap { display: flex; align-items: flex-end; padding-bottom: 1px; }
 		`;
 		document.head.appendChild(style);
@@ -1585,6 +1586,9 @@ class TransactionHistoryPage {
 		if (customer) {
 			const r = rows[0];
 			const oldest = r.bucket_90_plus > 0 ? "90+" : r.bucket_61_90 > 0 ? "61–90" : r.bucket_31_60 > 0 ? "31–60" : __("Current");
+			const hl = (r.overdue || 0) > 0 ? "is-red" : ((r.outstanding || 0) > 0 || (r.unallocated_advance || 0) > 0) ? "is-amber" : "";
+			const info_title = hl === "is-red" ? __("Overdue invoices — click for details")
+				: hl ? __("Outstanding or advances pending — click for details") : __("Party details");
 			$content.html(`
 				<div class="th-stats-3col" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
 					<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px">
@@ -1606,7 +1610,7 @@ class TransactionHistoryPage {
 						<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
-					<span class="th-party-info-btn" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
+					<span class="th-party-info-btn${hl ? " " + hl : ""}" data-party="${customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="recv-detail-content" data-for="${customer}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -1660,16 +1664,15 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const ind = r.bucket_90_plus > 0 ? "red" : r.bucket_61_90 > 0 ? "orange" : "";
-						const has_adv = (r.unallocated_advance || 0) > 0;
-						const info_title = has_adv
-							? __("Has unallocated advance — click for details")
-							: __("Party details");
+						const hl = (r.overdue || 0) > 0 ? "is-red" : ((r.outstanding || 0) > 0 || (r.unallocated_advance || 0) > 0) ? "is-amber" : "";
+						const info_title = hl === "is-red" ? __("Overdue invoices — click for details")
+							: hl ? __("Outstanding or advances pending — click for details") : __("Party details");
 						return `
 						<tr class="recv-summary-row" data-party="${r.customer}" data-company="${company}" data-as-of="${as_of_date}"
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.customer}<span class="th-party-info-btn${hl ? " " + hl : ""}" data-party="${r.customer}" data-party-type="customer" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.customer_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
@@ -1938,136 +1941,117 @@ class TransactionHistoryPage {
 				const d = r.message || {};
 				const bc = this.base_currency;
 				const is_customer = party_type === "customer";
-				const doc = d.doc || {};
 				const stats = d.stats || {};
-
-				// ── Stats cards ───────────────────────────────────────────────
-				const card_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:10px 14px;min-width:0";
+				const money = (v) => format_currency(v || 0, bc);
+				const date = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
+				const card_style = "background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:10px 12px;min-width:0";
 				const lbl = (t) => `<div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;white-space:nowrap">${t}</div>`;
 				const val = (v, color) => `<div style="font-size:14px;font-weight:700;${color ? "color:" + color + ";" : ""}">${v}</div>`;
+				const card = (label, value, color) => `<div style="${card_style}">${lbl(label)}${val(value, color)}</div>`;
+				const sec = (t) => `<div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 6px">${t}</div>`;
 
-				const unpaid_color = (stats.total_unpaid || 0) > 0 ? "var(--red)" : "var(--green)";
-
-				let stats_html = `
-					<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
-						<div style="${card_style}">
-							${lbl(__("Total Outstanding"))}
-							${val(format_currency(stats.total_unpaid || 0, bc), unpaid_color)}
-						</div>
-						<div style="${card_style}">
-							${lbl(__("Annual Billing"))}
-							${val(format_currency(stats.annual_billing || 0, bc))}
-						</div>
-						<div style="${card_style}">
-							${lbl(__("Lifetime Billing"))}
-							${val(format_currency(stats.lifetime_billing || 0, bc))}
-						</div>
-					</div>
-					<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
-						<div style="${card_style}">
-							${lbl(__("Last Transaction"))}
-							${val(stats.last_transaction ? frappe.datetime.str_to_user(stats.last_transaction) : "—")}
-						</div>
-						<div style="${card_style}">
-							${lbl(is_customer ? __("Credit Limit") : __("Payment Terms"))}
-							${is_customer
-								? val(d.credit_limit != null ? format_currency(d.credit_limit, bc) : "—")
-								: val(doc.payment_terms || "—")
-							}
-						</div>
-						<div style="${card_style}">
-							${lbl(__("Tax ID"))}
-							${val(doc.tax_id || "—")}
-						</div>
-					</div>`;
-
-				if (d.unallocated_total > 0) {
-					stats_html += `
-					<div style="background:var(--alert-bg);border:1px solid var(--blue);border-radius:5px;padding:7px 12px;margin-bottom:14px;font-size:12px">
-						<span>${__("Unallocated Advance")}: <strong style="color:var(--green)">${format_currency(d.unallocated_total, bc)}</strong></span>
-						<span style="color:var(--text-muted);margin-left:6px">${__("already netted into Total Outstanding above")}</span>
+				let cards = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+					${card(__("Total Outstanding"), money(d.outstanding_total), d.outstanding_total > 0 ? "var(--red)" : "var(--green)")}
+					${card(__("Overdue"), `${d.overdue_count || 0} · ${money(d.overdue_total)}`, d.overdue_count ? "var(--red)" : "")}
+					${card(__("Unallocated Advances"), money(d.advances_total), d.advances_total > 0 ? "var(--green)" : "")}
+					${is_customer ? card(__("Credit Limit"), d.credit_limit != null ? money(d.credit_limit) : "—") : card(__("Payment Terms"), d.payment_terms || "—")}
+				</div>`;
+				if (stats.annual_billing != null || stats.lifetime_billing != null) {
+					cards += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
+						${card(__("Annual Billing"), money(stats.annual_billing))}
+						${card(__("Lifetime Billing"), money(stats.lifetime_billing))}
+						${card(__("Last Transaction"), date(stats.last_transaction))}
 					</div>`;
 				}
 
-				// ── Contacts ──────────────────────────────────────────────────
-				const sec = (t) => `<div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${t}</div>`;
+				const invoices = (d.invoices || []).length
+					? this._render_outstanding_detail(d.invoices, is_customer, show_future_payments)
+					: `<div class="text-muted" style="font-size:12px">${__("No outstanding invoices")}</div>`;
 
-				let contacts_html = `<span class="text-muted" style="font-size:12px">${__("No contacts found")}</span>`;
-				if (d.contacts && d.contacts.length) {
-					contacts_html = d.contacts.map(c => {
-						const name = [c.first_name, c.last_name].filter(Boolean).join(" ");
-						const email = c.email_id || "";
-						const phone = c.mobile_no || c.phone || "";
-						return `<div style="padding:7px 0;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-							<div>
-								<div style="font-size:12px;font-weight:600">${name}${c.is_primary_contact ? ` <span class="indicator-pill blue" style="font-size:9px;vertical-align:middle">${__("Primary")}</span>` : ""}</div>
-								${email ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px"><a href="mailto:${email}" style="color:inherit">${email}</a></div>` : ""}
-								${phone ? `<div style="font-size:11px;color:var(--text-muted);margin-top:1px"><a href="tel:${phone}" style="color:inherit">${phone}</a></div>` : ""}
-							</div>
-						</div>`;
-					}).join("");
-				}
+				const adv_rows = (d.advances || []).map((p, i) => `
+					<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
+						<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/payment-entry/${p.name}" target="_blank">${p.name}</a></td>
+						<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${date(p.posting_date)}</td>
+						<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${money(p.paid_amount)}</td>
+						<td style="padding:3px 8px;text-align:right;font-weight:700;color:var(--green);border-bottom:1px solid var(--border-color)">${money(p.unallocated_amount)}</td>
+					</tr>`).join("");
+				const advances = adv_rows
+					? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
+						<thead><tr style="background:var(--subtle-fg)">
+							<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Payment Entry")}</th>
+							<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
+							<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Paid")}</th>
+							<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Unallocated")}</th>
+						</tr></thead><tbody>${adv_rows}</tbody></table></div>`
+					: `<div class="text-muted" style="font-size:12px">${__("No open payments")}</div>`;
 
-				// ── Address ───────────────────────────────────────────────────
-				let addr_html = `<span class="text-muted" style="font-size:12px">${__("No address on file")}</span>`;
-				if (d.address) {
-					const a = d.address;
-					const lines = [a.address_line1, a.address_line2, [a.city, a.state].filter(Boolean).join(", "), [a.pincode, a.country].filter(Boolean).join(" ")].filter(Boolean);
-					addr_html = lines.map(l => `<div style="font-size:12px;line-height:1.7">${l}</div>`).join("");
+				const c = d.primary_contact;
+				let contact = `<span class="text-muted">${__("No contact on file")}</span>`;
+				if (c) {
+					contact = `<strong>${frappe.utils.escape_html(c.name || "")}</strong>`
+						+ (c.email ? ` · <a href="mailto:${c.email}" style="color:inherit">${c.email}</a>` : "")
+						+ (c.phone ? ` · <a href="tel:${c.phone}" style="color:inherit">${c.phone}</a>` : "");
 				}
-				if (doc.mobile_no || doc.email_id) {
-					const direct = [doc.email_id ? `<a href="mailto:${doc.email_id}" style="color:inherit">${doc.email_id}</a>` : null, doc.mobile_no ? `<a href="tel:${doc.mobile_no}" style="color:inherit">${doc.mobile_no}</a>` : null].filter(Boolean);
-					addr_html += `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">${direct.join(" · ")}</div>`;
-				}
-				if (is_customer && doc.payment_terms) {
-					addr_html += `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">${__("Payment Terms")}: ${doc.payment_terms}</div>`;
-				}
+				if (d.payment_terms && is_customer) contact += `<div class="text-muted">${__("Payment Terms")}: ${d.payment_terms}</div>`;
 
-				// ── Unallocated advance table ──────────────────────────────────
-				let adv_html = "";
-				if (d.unallocated_payments && d.unallocated_payments.length) {
-					const rows_html = d.unallocated_payments.map((p, i) => `
-						<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
-							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)"><a href="/app/payment-entry/${p.name}" target="_blank">${p.name}</a></td>
-							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${frappe.datetime.str_to_user(p.posting_date)}</td>
-							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(p.paid_amount, bc)}</td>
-							<td style="padding:3px 8px;text-align:right;font-weight:700;color:var(--green);border-bottom:1px solid var(--border-color)">${format_currency(p.unallocated_amount, bc)}</td>
-						</tr>`).join("");
-					adv_html = `
-						<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color)">
-							${sec(__("Unallocated Advances"))}
-							<div style="overflow-x:auto">
-							<table style="width:100%;border-collapse:collapse;font-size:11px">
-								<thead><tr style="background:var(--subtle-fg)">
-									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Payment Entry")}</th>
-									<th style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${__("Date")}</th>
-									<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Paid Amount")}</th>
-									<th style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${__("Unallocated")}</th>
-								</tr></thead>
-								<tbody>${rows_html}</tbody>
-							</table>
-							</div>
-						</div>`;
-				}
-
-				const dialog = new frappe.ui.Dialog({ title: party, size: "large" });
-				dialog.$body.html(`
-					<div style="padding:4px 0">
-						${stats_html}
-						<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-							<div>
-								${sec(__("Contacts"))}
-								${contacts_html}
-							</div>
-							<div>
-								${sec(__("Address"))}
-								${addr_html}
-							</div>
-						</div>
-						${adv_html}
-					</div>`);
+				const dialog = new frappe.ui.Dialog({
+					title: d.customer_name || party,
+					indicator: d.overdue_count ? "red" : "blue",
+					size: "large",
+					primary_action_label: __("Email {0}", [is_customer ? __("Customer") : __("Supplier")]),
+					primary_action: () => this._email_party_snapshot(party_type, party, d, bc),
+					secondary_action_label: __("Copy to Clipboard"),
+					secondary_action: () => this._copy_party_snapshot(d, bc),
+				});
+				dialog.add_custom_action(__("Close"), () => dialog.hide());
+				dialog.$body.html(`<div style="padding:4px 0">
+					${cards}
+					${sec(__("Outstanding invoices"))}${invoices}
+					${sec(__("Open payments"))}${advances}
+					${sec(__("Contact"))}<div style="font-size:12px">${contact}</div>
+				</div>`);
 				dialog.show();
 			},
+		});
+	}
+
+	_party_snapshot_text(d, bc) {
+		const pad = (s, n) => { s = String(s == null ? "" : s); return s + " ".repeat(Math.max(0, n - s.length)); };
+		const money = (v) => format_currency(v || 0, bc);
+		const sep = "-".repeat(72);
+		const lines = [`Dear ${d.customer_name || ""},`, ""];
+		if ((d.invoices || []).length) {
+			lines.push("Your account currently shows the following outstanding invoices:");
+			lines.push(pad("Invoice", 22) + pad("Due Date", 14) + pad("Days Overdue", 14) + "Outstanding");
+			lines.push(sep);
+			d.invoices.forEach((r) => lines.push(pad(r.voucher_no, 22) + pad(r.due_date ? frappe.datetime.str_to_user(r.due_date) : "", 14) + pad(r.days_overdue || 0, 14) + money(r.outstanding_amount)));
+			lines.push(sep);
+			lines.push("Total Outstanding: " + money(d.outstanding_total));
+		} else {
+			lines.push("Your account has no outstanding invoices.");
+		}
+		if ((d.advances || []).length) {
+			lines.push("", "Unallocated payments on your account:");
+			d.advances.forEach((a) => lines.push(pad(a.name, 22) + pad(frappe.datetime.str_to_user(a.posting_date), 14) + money(a.unallocated_amount)));
+			lines.push("Net position: " + money(d.net_position));
+		}
+		lines.push("", d.overdue_count ? "Kindly arrange for payment at your earliest convenience." : "Thank you for your business.");
+		return lines.join("\n");
+	}
+
+	_copy_party_snapshot(d, bc) {
+		navigator.clipboard.writeText(this._party_snapshot_text(d, bc)).then(() => {
+			frappe.show_alert({ message: __("Copied to clipboard"), indicator: "green" });
+		});
+	}
+
+	_email_party_snapshot(party_type, party, d, bc) {
+		const doctype = party_type === "customer" ? "Customer" : "Supplier";
+		new frappe.views.CommunicationComposer({
+			doc: { doctype, name: party },
+			subject: __("Account statement — {0}: {1} outstanding", [d.customer_name || party, format_currency(d.outstanding_total || 0, bc)]),
+			recipients: d.primary_email || "",
+			message: `<pre style="font-family:inherit;white-space:pre-wrap">${frappe.utils.escape_html(this._party_snapshot_text(d, bc))}</pre>`,
 		});
 	}
 
@@ -2112,6 +2096,9 @@ class TransactionHistoryPage {
 		if (supplier) {
 			const r = rows[0];
 			const oldest = r.bucket_90_plus > 0 ? "90+" : r.bucket_61_90 > 0 ? "61–90" : r.bucket_31_60 > 0 ? "31–60" : __("Current");
+			const hl = (r.overdue || 0) > 0 ? "is-red" : ((r.outstanding || 0) > 0 || (r.unallocated_advance || 0) > 0) ? "is-amber" : "";
+			const info_title = hl === "is-red" ? __("Overdue invoices — click for details")
+				: hl ? __("Outstanding or advances pending — click for details") : __("Party details");
 			$content.html(`
 				<div class="th-stats-3col" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
 					<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px 16px">
@@ -2133,7 +2120,7 @@ class TransactionHistoryPage {
 						<button class="th-action-btn btn-copy-link" title="${__("Copy internal link")}">${_ICONS.link}</button>
 						<button class="th-action-btn btn-statement" title="${__("Statement")}">${_ICONS.statement}</button>
 					</div>
-					<span class="th-party-info-btn" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${__("Party details")}" style="margin-left:4px">${_ICONS.info}</span>
+					<span class="th-party-info-btn${hl ? " " + hl : ""}" data-party="${supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}" style="margin-left:4px">${_ICONS.info}</span>
 				</div>
 				<div class="pay-detail-content" data-for="${supplier}" style="padding:4px 0">
 					<div class="text-muted" style="padding:12px">${__("Loading invoices...")}</div>
@@ -2187,16 +2174,15 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const ind = r.bucket_90_plus > 0 ? "red" : r.bucket_61_90 > 0 ? "orange" : "";
-						const has_adv = (r.unallocated_advance || 0) > 0;
-						const info_title = has_adv
-							? __("Has unallocated advance — click for details")
-							: __("Party details");
+						const hl = (r.overdue || 0) > 0 ? "is-red" : ((r.outstanding || 0) > 0 || (r.unallocated_advance || 0) > 0) ? "is-amber" : "";
+						const info_title = hl === "is-red" ? __("Overdue invoices — click for details")
+							: hl ? __("Outstanding or advances pending — click for details") : __("Party details");
 						return `
 						<tr class="pay-summary-row" data-party="${r.supplier}" data-company="${company}" data-as-of="${as_of_date}"
 							style="${i % 2 ? "background:var(--control-bg)" : ""};cursor:pointer">
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);color:var(--text-muted)">▶</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">
-								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}<span class="th-party-info-btn${has_adv ? " has-advance" : ""}" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
+								${ind ? `<span class="indicator-pill ${ind}" style="font-size:10px;margin-right:4px"> </span>` : ""}${r.supplier}<span class="th-party-info-btn${hl ? " " + hl : ""}" data-party="${r.supplier}" data-party-type="supplier" data-company="${company}" data-as-of="${as_of_date}" data-show-future="${show_future ? 1 : 0}" title="${info_title}">${_ICONS.info}</span>
 							</td>
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.supplier_group || ""}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.total_invoiced, bc)}</td>
