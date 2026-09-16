@@ -584,3 +584,94 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertEqual(d["net_position"], round(d["outstanding_total"] - d["advances_total"], 2))
 		# stats.total_unpaid stays the grid's netted figure
 		self.assertLess(d["stats"]["total_unpaid"], d["outstanding_total"])
+
+	def _as_sales_only_user(self):
+		"""A user with Sales User only — no Journal Entry read."""
+		email = "_th_sales_only@example.com"
+		if not frappe.db.exists("User", email):
+			frappe.get_doc({
+				"doctype": "User", "email": email, "first_name": "TH Sales",
+				"send_welcome_email": 0, "roles": [{"role": "Sales User"}],
+			}).insert(ignore_permissions=True)
+		return email
+
+	def _overdue_invoice(self, rate=250):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
+		si = create_sales_invoice(customer="_Test Customer", company="_Test Company", rate=rate, qty=1, do_not_save=True)
+		si.set_posting_time = 1
+		si.posting_date = add_days(today(), -50)
+		si.due_date = add_days(today(), -45)
+		si.insert()
+		si.submit()
+		return si
+
+	def test_sales_only_user_gets_receivables_from_invoices(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_balance_basis, get_party_details, get_receivables, get_receivables_detail,
+		)
+
+		si = self._overdue_invoice()
+		email = self._as_sales_only_user()
+		# This site's Sales User role has a Custom DocPerm with if_owner=1 on Sales Invoice
+		# (see cecypo_powerpack's Permission Manager notes), unlike a stock ERPNext site
+		# where Sales User reads any Sales Invoice. Own the fixture invoice so it is visible
+		# to this user under that scoping — the fallback must still respect it either way.
+		frappe.db.set_value("Sales Invoice", si.name, "owner", email)
+		frappe.set_user(email)
+		try:
+			self.assertFalse(frappe.has_permission("Journal Entry", "read"))
+			self.assertEqual(get_balance_basis(), "invoices")
+			rows = get_receivables(company="_Test Company", as_of_date=frappe.utils.today())
+			row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
+			self.assertIsNotNone(row)
+			self.assertGreaterEqual(row["overdue"], 250)
+			self.assertGreaterEqual(row["bucket_31_60"], 250)  # 45 days past due
+			detail = get_receivables_detail(customer="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
+			self.assertIn(si.name, [r["voucher_no"] for r in detail])
+			d = get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
+			self.assertEqual(d["basis"], "invoices")
+			self.assertIn(si.name, [r["voucher_no"] for r in d["invoices"]])
+			self.assertNotIn("annual_billing", d["stats"])
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_accounts_user_keeps_the_ledger_report(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_balance_basis, get_party_details,
+		)
+
+		self.assertTrue(frappe.has_permission("Journal Entry", "read"))  # Administrator
+		self.assertEqual(get_balance_basis(), "ledger")
+		d = get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
+		self.assertEqual(d["basis"], "ledger")
+
+	def test_fallback_ageing_matches_erpnext_buckets(self):
+		from frappe.utils import add_days, getdate, today
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import _ageing
+
+		as_of = getdate(today())
+		for days_past_due, bucket in ((-5, "range0"), (0, "range1"), (30, "range1"), (31, "range2"), (60, "range2"), (90, "range3"), (120, "range4"), (121, "range5")):
+			row = {"outstanding": 10.0}
+			_ageing(row, add_days(as_of, -days_past_due), as_of)
+			self.assertEqual(row[bucket], 10.0, (days_past_due, bucket, row))
+			self.assertEqual(sum(v for k, v in row.items() if k.startswith("range")), 10.0)
+
+	def test_fallback_respects_user_permissions(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import get_receivables
+
+		self._overdue_invoice()
+		email = self._as_sales_only_user()
+		if not frappe.db.exists("Customer", "_Test Customer 1"):
+			self.skipTest("_Test Customer 1 missing")
+		frappe.get_doc({
+			"doctype": "User Permission", "user": email, "allow": "Customer", "for_value": "_Test Customer 1",
+		}).insert(ignore_permissions=True)
+		frappe.set_user(email)
+		try:
+			rows = get_receivables(company="_Test Company", as_of_date=frappe.utils.today())
+			self.assertNotIn("_Test Customer", [r["customer"] for r in rows])
+		finally:
+			frappe.set_user("Administrator")

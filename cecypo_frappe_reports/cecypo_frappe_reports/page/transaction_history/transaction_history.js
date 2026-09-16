@@ -1545,6 +1545,22 @@ class TransactionHistoryPage {
 			</div>`;
 	}
 
+	// ── Shared: invoice-based fallback basis note ───────────────────────────────
+
+	_basis_note_html() {
+		return `<div class="text-muted" style="font-size:11px;margin-top:6px">${__("Based on invoices and payments only; journal entry adjustments are not included.")}</div>`;
+	}
+
+	_get_balance_basis() {
+		if (this._balance_basis) return Promise.resolve(this._balance_basis);
+		return frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_balance_basis",
+		}).then((r) => {
+			this._balance_basis = r.message;
+			return this._balance_basis;
+		});
+	}
+
 	// ── Receivables ───────────────────────────────────────────────────────────
 
 	_load_receivables() {
@@ -1566,6 +1582,9 @@ class TransactionHistoryPage {
 					this._recv_state.as_of_date = as_of_date;
 					this._recv_state.show_future_payments = show_future_payments;
 					this._render_receivables(r.message, company, as_of_date, customer);
+					this._get_balance_basis().then((basis) => {
+						if (basis === "invoices") $(m).find(".receivables-content").prepend(this._basis_note_html());
+					});
 				}
 			},
 		});
@@ -2006,6 +2025,7 @@ class TransactionHistoryPage {
 				dialog.add_custom_action(__("Close"), () => dialog.hide());
 				dialog.$body.html(`<div style="padding:4px 0">
 					${cards}
+					${d.basis === "invoices" ? this._basis_note_html() : ""}
 					${sec(__("Outstanding invoices"))}${invoices}
 					${sec(__("Open payments"))}${advances}
 					${sec(__("Contact"))}<div style="font-size:12px">${contact}</div>
@@ -2076,6 +2096,9 @@ class TransactionHistoryPage {
 					this._pay_state.as_of_date = as_of_date;
 					this._pay_state.show_future_payments = show_future_payments;
 					this._render_payables(r.message, company, as_of_date, supplier);
+					this._get_balance_basis().then((basis) => {
+						if (basis === "invoices") $(m).find(".payables-content").prepend(this._basis_note_html());
+					});
 				}
 			},
 		});

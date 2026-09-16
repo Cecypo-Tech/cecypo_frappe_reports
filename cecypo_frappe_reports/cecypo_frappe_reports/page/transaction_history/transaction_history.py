@@ -342,6 +342,12 @@ def get_payables_detail(supplier, company, as_of_date, show_future_payments=0):
 
 
 @frappe.whitelist()
+def get_balance_basis():
+	"""'invoices' when this user's receivable/payable figures come from the invoice-based fallback."""
+	return "invoices" if uses_invoice_basis() else "ledger"
+
+
+@frappe.whitelist()
 def get_item_prices(item_code):
 	"""Returns all Item Price records (selling + buying) for an item."""
 	ip = frappe.qb.DocType("Item Price")
@@ -611,6 +617,7 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 		"net_position": flt(outstanding_total - advances_total, 2),
 		"invoices": invoices,
 		"highlight": _highlight_for(len(overdue), outstanding_total, advances_total),
+		"basis": "invoices" if uses_invoice_basis() else "ledger",
 	}
 
 
@@ -736,7 +743,15 @@ def _get_supplier_last_rate_map(supplier, company, item_codes, source="pi", from
 
 
 def _get_report_execute(party_type):
-	"""Return ERPNext's Accounts Receivable/Payable report `execute` function for party_type."""
+	"""Return a report `execute(filters)` for party_type.
+
+	ERPNext's Accounts Receivable/Payable report reads Journal Entries through
+	permission-checked queries and is meant for accounts roles; a user without
+	Journal Entry read would get a PermissionError. Such users get the same row
+	shape built from invoices and Payment Entries under their own permissions.
+	"""
+	if not frappe.has_permission("Journal Entry", "read"):
+		return lambda filters: _invoice_based_report(party_type, filters)
 	if party_type == "Customer":
 		from erpnext.accounts.report.accounts_receivable.accounts_receivable import execute as ar_execute
 
@@ -744,6 +759,127 @@ def _get_report_execute(party_type):
 	from erpnext.accounts.report.accounts_payable.accounts_payable import execute as ap_execute
 
 	return ap_execute
+
+
+def uses_invoice_basis():
+	"""True when this user's figures come from the invoice-based fallback."""
+	return not frappe.has_permission("Journal Entry", "read")
+
+
+AGEING_RANGES = (30, 60, 90, 120)  # ERPNext's default "30, 60, 90, 120"
+
+
+def _ageing(row, entry_date, as_of):
+	"""Same bucketing as ERPNext's ReceivablePayableReport.set_ageing (Due Date basis)."""
+	for i in range(0, len(AGEING_RANGES) + 2):
+		row[f"range{i}"] = 0.0
+	entry = getdate(entry_date)
+	if entry > as_of:
+		row["range0"] = row["outstanding"]
+		return
+	age = (as_of - entry).days or 0
+	index = next((i for i, days in enumerate(AGEING_RANGES) if age <= days), len(AGEING_RANGES))
+	row[f"range{index + 1}"] = row["outstanding"]
+
+
+def _invoice_based_report(party_type, filters):
+	"""Rows shaped like ERPNext's AR/AP report `data`, from invoices and Payment Entries.
+
+	Uses frappe.get_list, so the user's own permissions and User Permissions apply.
+	Outstanding is each invoice's current outstanding_amount (not recomputed as of
+	report_date), and journal-entry adjustments are not included.
+	"""
+	is_customer = party_type == "Customer"
+	inv_doctype = "Sales Invoice" if is_customer else "Purchase Invoice"
+	party_field = "customer" if is_customer else "supplier"
+	group_field = "customer_group" if is_customer else "supplier_group"
+	as_of = getdate(filters.get("report_date"))
+
+	inv_filters = {
+		"docstatus": 1,
+		"company": filters.get("company"),
+		"posting_date": ["<=", as_of],
+		"outstanding_amount": ["!=", 0],
+	}
+	parties = filters.get("party")
+	if parties:
+		inv_filters[party_field] = ["in", parties]
+	invoices = frappe.get_list(
+		inv_doctype,
+		filters=inv_filters,
+		fields=["name", party_field, "posting_date", "due_date", "grand_total", "rounded_total", "outstanding_amount"],
+		order_by="posting_date asc",
+	)
+
+	pe_filters = {
+		"docstatus": 1,
+		"company": filters.get("company"),
+		"party_type": party_type,
+		"payment_type": "Receive" if is_customer else "Pay",
+		"posting_date": ["<=", as_of],
+		"unallocated_amount": [">", 0],
+	}
+	if parties:
+		pe_filters["party"] = ["in", parties]
+	# A role that can see its own Sales/Purchase Invoices (e.g. Sales User) does not
+	# necessarily have read on Payment Entry. Degrade to invoice-only rows rather than
+	# raising — invoice outstanding_amount already nets allocated payments; only
+	# unallocated-advance rows are lost.
+	payments = (
+		frappe.get_list(
+			"Payment Entry",
+			filters=pe_filters,
+			fields=["name", "party", "posting_date", "paid_amount", "unallocated_amount"],
+			order_by="posting_date asc",
+		)
+		if frappe.has_permission("Payment Entry", "read")
+		else []
+	)
+
+	groups = {}
+	names = {inv[party_field] for inv in invoices} | {p.party for p in payments}
+	if names:
+		groups = dict(
+			frappe.get_all(
+				party_type, filters={"name": ["in", list(names)]}, fields=["name", group_field], as_list=True
+			)
+		)
+
+	data = []
+	for inv in invoices:
+		invoiced = flt(inv.rounded_total) or flt(inv.grand_total)
+		outstanding = flt(inv.outstanding_amount)
+		row = frappe._dict(
+			party=inv[party_field],
+			**{group_field: groups.get(inv[party_field], "")},
+			voucher_type=inv_doctype,
+			voucher_no=inv.name,
+			posting_date=inv.posting_date,
+			due_date=inv.due_date,
+			invoiced=invoiced,
+			paid=flt(max(invoiced - outstanding, 0)),
+			outstanding=outstanding,
+			future_amount=0.0,
+		)
+		_ageing(row, inv.due_date or inv.posting_date, as_of)
+		data.append(row)
+	for p in payments:
+		outstanding = -flt(p.unallocated_amount)
+		row = frappe._dict(
+			party=p.party,
+			**{group_field: groups.get(p.party, "")},
+			voucher_type="Payment Entry",
+			voucher_no=p.name,
+			posting_date=p.posting_date,
+			due_date=None,
+			invoiced=0.0,
+			paid=flt(p.unallocated_amount),
+			outstanding=outstanding,
+			future_amount=0.0,
+		)
+		_ageing(row, p.posting_date, as_of)
+		data.append(row)
+	return [], data
 
 
 def _get_party_balances(party_type, company, as_of_date, party=None, show_future_payments=0):
