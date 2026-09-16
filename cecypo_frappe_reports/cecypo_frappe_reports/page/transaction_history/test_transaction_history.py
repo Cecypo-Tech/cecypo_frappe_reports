@@ -523,18 +523,39 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertEqual(d["net_position"], round(d["outstanding_total"] - d["advances_total"], 2))
 
 	def test_receivables_rows_carry_overdue(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_receivables,
 		)
 
-		rows = get_receivables(company="_Test Company", as_of_date=frappe.utils.today())
+		si = create_sales_invoice(customer="_Test Customer", company="_Test Company", rate=300, qty=1, do_not_save=True)
+		si.set_posting_time = 1
+		si.posting_date = add_days(today(), -40)
+		si.due_date = add_days(today(), -10)
+		si.insert()
+		si.submit()
+
+		rows = get_receivables(company="_Test Company", as_of_date=today())
+		row = next((r for r in rows if r["customer"] == "_Test Customer"), None)
+		self.assertIsNotNone(row)
+		self.assertIn("overdue", row)
+		self.assertGreaterEqual(row["overdue"], 300)
 		for r in rows:
-			self.assertIn("overdue", r)
 			self.assertGreaterEqual(r["overdue"], 0)
 
 	def test_party_details_requires_invoice_read(self):
 		from unittest.mock import patch
 
-		with patch.object(frappe, "has_permission", side_effect=frappe.PermissionError):
+		with patch.object(frappe, "has_permission", side_effect=frappe.PermissionError) as perm:
 			with self.assertRaises(frappe.PermissionError):
 				self._details()
+		self.assertEqual(perm.call_args_list[0].args[:2], ("Sales Invoice", "read"))
+		self.assertTrue(perm.call_args_list[0].kwargs.get("throw"))
+		self.assertEqual(perm.call_count, 1)
+
+		with patch.object(frappe, "has_permission", side_effect=frappe.PermissionError) as perm:
+			with self.assertRaises(frappe.PermissionError):
+				self._details(party_type="supplier", party="_Test Supplier")
+		self.assertEqual(perm.call_args_list[0].args[:2], ("Purchase Invoice", "read"))
