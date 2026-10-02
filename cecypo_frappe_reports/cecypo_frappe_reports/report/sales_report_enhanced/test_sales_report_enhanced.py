@@ -6,6 +6,8 @@ import unittest
 import frappe
 
 from cecypo_frappe_reports.cecypo_frappe_reports.report.sales_report_enhanced.sales_report_enhanced import (
+	NO_MODE,
+	add_payment_entries,
 	get_data,
 	get_direct_payments,
 )
@@ -56,18 +58,59 @@ class TestDirectPayments(unittest.TestCase):
 		self.assertEqual(modes, set())
 
 
+class TestPaymentEntries(unittest.TestCase):
+	def test_refund_paid_out_against_a_return_is_a_negative_payment(self):
+		# X-POS-00021 on dev: -430 return refunded by a "Pay" Payment Entry
+		payment_map, modes = {}, set()
+		add_payment_entries(
+			payment_map, modes, [frappe._dict(parent="X-1", mode_of_payment="Cash", base_amount=-430)]
+		)
+		self.assertEqual(payment_map, {"X-1": {"Cash": -430}})
+
+	def test_entry_without_mode_lands_in_no_mode_column(self):
+		payment_map, modes = {"SI-1": {"Cash": 50}}, {"Cash"}
+		add_payment_entries(
+			payment_map, modes, [frappe._dict(parent="SI-1", mode_of_payment=None, base_amount=136)]
+		)
+		self.assertEqual(payment_map, {"SI-1": {"Cash": 50, NO_MODE: 136}})
+		self.assertEqual(modes, {"Cash", NO_MODE})
+
+	def test_entries_add_to_pos_payments_of_the_same_mode(self):
+		payment_map, modes = {"SI-1": {"Cash": 50}}, {"Cash"}
+		add_payment_entries(
+			payment_map, modes, [frappe._dict(parent="SI-1", mode_of_payment="Cash", base_amount=25)]
+		)
+		self.assertEqual(payment_map, {"SI-1": {"Cash": 75}})
+
+
+def _invoice(grand, rounded, outstanding, **kw):
+	return frappe._dict(
+		name="CS-1",
+		posting_date="2026-10-01",
+		customer="C",
+		customer_name="C",
+		base_grand_total=grand,
+		base_rounded_total=rounded,
+		outstanding_amount=outstanding,
+		**{"is_return": 0, **kw},
+	)
+
+
+class TestOutstanding(unittest.TestCase):
+	def test_pos_return_applied_to_the_original_has_no_outstanding_of_its_own(self):
+		# klik_pos sets update_outstanding_for_self=0 on POS returns; ERPNext still stamps
+		# the return's own outstanding (-350) while the ledger reduces the original instead.
+		inv = _invoice(-350, -350, -350, is_return=1, return_against="INV-1", update_outstanding_for_self=0)
+		self.assertEqual(get_data([inv], {}, [])[0]["outstanding_amount"], 0)
+
+	def test_return_carrying_its_own_credit_keeps_its_outstanding(self):
+		inv = _invoice(-350, -350, -350, is_return=1, return_against="INV-1", update_outstanding_for_self=1)
+		self.assertEqual(get_data([inv], {}, [])[0]["outstanding_amount"], -350)
+
+
 class TestGrandTotal(unittest.TestCase):
 	def _invoice(self, grand, rounded, outstanding):
-		return frappe._dict(
-			name="CS-1",
-			posting_date="2026-10-01",
-			customer="C",
-			customer_name="C",
-			base_grand_total=grand,
-			base_rounded_total=rounded,
-			outstanding_amount=outstanding,
-			is_return=0,
-		)
+		return _invoice(grand, rounded, outstanding)
 
 	def test_grand_total_is_rounded_total(self):
 		# CS-00162 on prod: grand 37,016.50, rounded/outstanding 37,016
