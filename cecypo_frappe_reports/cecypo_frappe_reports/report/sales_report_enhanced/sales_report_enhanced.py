@@ -15,8 +15,7 @@ def execute(filters=None):
 	if not invoices:
 		return get_columns([]), [], None, None, None
 
-	invoice_names = [inv.name for inv in invoices]
-	payment_map, all_modes = get_payment_map(invoice_names)
+	payment_map, all_modes = get_payment_map(invoices)
 	columns = get_columns(all_modes)
 	data = get_data(invoices, payment_map, all_modes)
 	report_summary = get_report_summary(data, all_modes)
@@ -35,8 +34,11 @@ def get_invoices(filters):
 			si.customer,
 			si.customer_name,
 			si.base_grand_total,
+			si.base_rounded_total,
 			si.outstanding_amount,
 			si.is_return,
+			si.base_change_amount,
+			si.account_for_change_amount,
 		)
 		.where(si.docstatus == 1)
 		.orderby(si.posting_date)
@@ -122,12 +124,11 @@ def get_invoices(filters):
 	return query.run(as_dict=True)
 
 
-def get_payment_map(invoice_names):
-	if not invoice_names:
+def get_payment_map(invoices):
+	if not invoices:
 		return {}, []
 
-	payment_map = {}
-	modes_set = set()
+	invoice_names = [inv.name for inv in invoices]
 
 	# 1. POS-style direct payments (Sales Invoice Payment child table)
 	sip = frappe.qb.DocType("Sales Invoice Payment")
@@ -136,18 +137,16 @@ def get_payment_map(invoice_names):
 		.select(
 			sip.parent,
 			sip.mode_of_payment,
+			sip.account,
+			sip.type,
 			fn.Sum(sip.base_amount).as_("base_amount"),
 		)
 		.where(sip.parent.isin(invoice_names))
-		.groupby(sip.parent, sip.mode_of_payment)
+		.groupby(sip.parent, sip.mode_of_payment, sip.account, sip.type)
 		.run(as_dict=True)
 	)
 
-	for p in direct:
-		if not p.mode_of_payment:
-			continue
-		payment_map.setdefault(p.parent, {})[p.mode_of_payment] = flt(p.base_amount)
-		modes_set.add(p.mode_of_payment)
+	payment_map, modes_set = get_direct_payments(direct, invoices)
 
 	# 2. Non-POS payments via Payment Entry Reference (canonical PE → SI link)
 	#    Sales Invoice Advance is unreliable: it's only populated when the invoice
@@ -181,6 +180,44 @@ def get_payment_map(invoice_names):
 
 	all_modes = sorted(modes_set)
 	return payment_map, all_modes
+
+
+def get_direct_payments(rows, invoices):
+	"""Sum POS payment rows per invoice and mode, net of change handed back.
+
+	A POS payment row holds the amount *tendered*. The change goes back out of
+	`account_for_change_amount`, so take it off the row on that account — failing
+	that the Cash-type row, failing that the largest row — so the mode columns sum
+	to what the business kept.
+	"""
+	rows_by_invoice = {}
+	for row in rows:
+		if row.mode_of_payment:
+			rows_by_invoice.setdefault(row.parent, []).append(row)
+
+	payment_map = {}
+	modes_set = set()
+	for inv in invoices:
+		inv_rows = rows_by_invoice.get(inv.name)
+		if not inv_rows:
+			continue
+
+		change = flt(inv.get("base_change_amount"))
+		change_row = None
+		if change:
+			change_row = (
+				next((r for r in inv_rows if r.account == inv.get("account_for_change_amount")), None)
+				or next((r for r in inv_rows if r.type == "Cash"), None)
+				or max(inv_rows, key=lambda r: flt(r.base_amount))
+			)
+
+		inv_payments = payment_map.setdefault(inv.name, {})
+		for row in inv_rows:
+			amount = flt(row.base_amount) - (change if row is change_row else 0)
+			inv_payments[row.mode_of_payment] = flt(inv_payments.get(row.mode_of_payment, 0)) + amount
+			modes_set.add(row.mode_of_payment)
+
+	return payment_map, modes_set
 
 
 def get_columns(all_modes):
@@ -256,7 +293,8 @@ def get_data(invoices, payment_map, all_modes):
 			"posting_date": inv.posting_date,
 			"customer": inv.customer,
 			"customer_name": inv.customer_name,
-			"grand_total": flt(inv.base_grand_total, 2),
+			# Outstanding is based on the rounded total; 0 when rounding is disabled
+			"grand_total": flt(inv.base_rounded_total or inv.base_grand_total, 2),
 			"outstanding_amount": flt(inv.outstanding_amount, 2),
 			"is_return": 1 if is_return else 0,
 		}
