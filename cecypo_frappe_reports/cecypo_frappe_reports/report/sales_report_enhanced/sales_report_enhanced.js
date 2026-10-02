@@ -66,6 +66,12 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			label: __("With Outstandings"),
 			fieldtype: "Check",
 		},
+		{
+			fieldname: "include_remarks",
+			label: __("Include Remarks"),
+			fieldtype: "Check",
+			default: 0,
+		},
 	],
 	formatter(value, row, column, data, default_formatter) {
 		let formatted;
