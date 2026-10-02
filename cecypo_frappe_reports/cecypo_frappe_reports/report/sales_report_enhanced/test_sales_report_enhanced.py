@@ -8,6 +8,7 @@ import frappe
 from cecypo_frappe_reports.cecypo_frappe_reports.report.sales_report_enhanced.sales_report_enhanced import (
 	NO_MODE,
 	add_payment_entries,
+	get_columns,
 	get_data,
 	get_direct_payments,
 )
@@ -120,3 +121,35 @@ class TestGrandTotal(unittest.TestCase):
 	def test_grand_total_falls_back_when_rounding_disabled(self):
 		data = get_data([self._invoice(37016.5, 0, 37016.5)], {}, [])
 		self.assertEqual(data[0]["grand_total"], 37016.5)
+
+
+class TestRemarksColumn(unittest.TestCase):
+	def _inv(self, **kw):
+		return frappe._dict(
+			name="SINV-1",
+			posting_date="2026-10-03",
+			customer="C",
+			customer_name="C",
+			base_grand_total=100,
+			base_rounded_total=100,
+			outstanding_amount=0,
+			is_return=0,
+			**kw,
+		)
+
+	def test_no_remarks_column_unless_asked_for(self):
+		fieldnames = [c["fieldname"] for c in get_columns(["Cash"])]
+		self.assertNotIn("remarks", fieldnames)
+
+	def test_remarks_is_the_last_column_after_the_payment_modes(self):
+		columns = get_columns(["Cash", "Mpesa"], include_remarks=True)
+		self.assertEqual(columns[-1]["fieldname"], "remarks")
+		self.assertEqual([c["fieldname"] for c in columns[-3:-1]], ["cash", "mpesa"])
+
+	def test_rows_carry_the_invoice_remarks_when_asked_for(self):
+		data = get_data([self._inv(remarks="Deliver after 5pm")], {}, [], include_remarks=True)
+		self.assertEqual(data[0]["remarks"], "Deliver after 5pm")
+
+	def test_rows_leave_remarks_out_otherwise(self):
+		data = get_data([self._inv(remarks="Deliver after 5pm")], {}, [])
+		self.assertNotIn("remarks", data[0])

@@ -14,13 +14,14 @@ def execute(filters=None):
 	if not filters:
 		filters = frappe._dict({})
 
+	include_remarks = bool(filters.get("include_remarks"))
 	invoices = get_invoices(filters)
 	if not invoices:
-		return get_columns([]), [], None, None, None
+		return get_columns([], include_remarks), [], None, None, None
 
 	payment_map, all_modes = get_payment_map(invoices)
-	columns = get_columns(all_modes)
-	data = get_data(invoices, payment_map, all_modes)
+	columns = get_columns(all_modes, include_remarks)
+	data = get_data(invoices, payment_map, all_modes, include_remarks)
 	report_summary = get_report_summary(data, all_modes)
 
 	return columns, data, None, None, report_summary
@@ -44,6 +45,7 @@ def get_invoices(filters):
 			si.update_outstanding_for_self,
 			si.base_change_amount,
 			si.account_for_change_amount,
+			si.remarks,
 		)
 		.where(si.docstatus == 1)
 		.orderby(si.posting_date)
@@ -230,7 +232,7 @@ def get_direct_payments(rows, invoices):
 	return payment_map, modes_set
 
 
-def get_columns(all_modes):
+def get_columns(all_modes, include_remarks=False):
 	columns = [
 		{
 			"label": _("Voucher Type"),
@@ -290,10 +292,20 @@ def get_columns(all_modes):
 			}
 		)
 
+	if include_remarks:
+		columns.append(
+			{
+				"label": _("Remarks"),
+				"fieldname": "remarks",
+				"fieldtype": "Small Text",
+				"width": 250,
+			}
+		)
+
 	return columns
 
 
-def get_data(invoices, payment_map, all_modes):
+def get_data(invoices, payment_map, all_modes, include_remarks=False):
 	data = []
 	for inv in invoices:
 		is_return = bool(inv.is_return)
@@ -312,6 +324,9 @@ def get_data(invoices, payment_map, all_modes):
 		inv_payments = payment_map.get(inv.name, {})
 		for mode in all_modes:
 			row[frappe.scrub(mode)] = flt(inv_payments.get(mode, 0), 2)
+
+		if include_remarks:
+			row["remarks"] = inv.get("remarks") or ""
 
 		data.append(row)
 
