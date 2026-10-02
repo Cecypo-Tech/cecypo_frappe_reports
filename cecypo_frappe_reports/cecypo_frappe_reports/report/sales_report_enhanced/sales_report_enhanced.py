@@ -6,6 +6,9 @@ from frappe import _
 from frappe.utils import flt
 from pypika import functions as fn
 
+# Column for Payment Entries saved without a Mode of Payment
+NO_MODE = "No Mode of Payment"
+
 
 def execute(filters=None):
 	if not filters:
@@ -37,6 +40,8 @@ def get_invoices(filters):
 			si.base_rounded_total,
 			si.outstanding_amount,
 			si.is_return,
+			si.return_against,
+			si.update_outstanding_for_self,
 			si.base_change_amount,
 			si.account_for_change_amount,
 		)
@@ -115,7 +120,7 @@ def get_invoices(filters):
 			.select(per.reference_name)
 			.where(per.reference_doctype == "Sales Invoice")
 			.where(pe.docstatus == 1)
-			.where(pe.payment_type == "Receive")
+			.where(pe.payment_type.isin(["Receive", "Pay"]))
 			.where(pe.mode_of_payment == filters.mode_of_payment)
 		)
 
@@ -152,6 +157,7 @@ def get_payment_map(invoices):
 	#    Sales Invoice Advance is unreliable: it's only populated when the invoice
 	#    is saved with `allocate_advances_automatically=1` AND a matching unallocated
 	#    PE exists at that moment. Payment Entry Reference is the source of truth.
+	#    "Pay" entries are refunds against returns; their allocation is negative.
 	per = frappe.qb.DocType("Payment Entry Reference")
 	pe = frappe.qb.DocType("Payment Entry")
 	via_pe = (
@@ -166,20 +172,24 @@ def get_payment_map(invoices):
 		.where(per.reference_doctype == "Sales Invoice")
 		.where(per.reference_name.isin(invoice_names))
 		.where(pe.docstatus == 1)
-		.where(pe.payment_type == "Receive")
+		.where(pe.payment_type.isin(["Receive", "Pay"]))
 		.groupby(per.reference_name, pe.mode_of_payment)
 		.run(as_dict=True)
 	)
 
-	for a in via_pe:
-		if not a.mode_of_payment:
-			continue
-		existing = flt(payment_map.setdefault(a.parent, {}).get(a.mode_of_payment, 0))
-		payment_map[a.parent][a.mode_of_payment] = existing + flt(a.base_amount)
-		modes_set.add(a.mode_of_payment)
+	add_payment_entries(payment_map, modes_set, via_pe)
 
 	all_modes = sorted(modes_set)
 	return payment_map, all_modes
+
+
+def add_payment_entries(payment_map, modes_set, rows):
+	"""Add Payment Entry allocations to the POS payments, per invoice and mode."""
+	for a in rows:
+		mode = a.mode_of_payment or NO_MODE
+		existing = flt(payment_map.setdefault(a.parent, {}).get(mode, 0))
+		payment_map[a.parent][mode] = existing + flt(a.base_amount)
+		modes_set.add(mode)
 
 
 def get_direct_payments(rows, invoices):
@@ -295,7 +305,7 @@ def get_data(invoices, payment_map, all_modes):
 			"customer_name": inv.customer_name,
 			# Outstanding is based on the rounded total; 0 when rounding is disabled
 			"grand_total": flt(inv.base_rounded_total or inv.base_grand_total, 2),
-			"outstanding_amount": flt(inv.outstanding_amount, 2),
+			"outstanding_amount": flt(get_outstanding(inv), 2),
 			"is_return": 1 if is_return else 0,
 		}
 
@@ -306,6 +316,18 @@ def get_data(invoices, payment_map, all_modes):
 		data.append(row)
 
 	return data
+
+
+def get_outstanding(inv):
+	"""The invoice's outstanding, ignoring the stale figure on a POS return applied to its original.
+
+	With `update_outstanding_for_self` off, a return's ledger entries reduce the original
+	invoice's outstanding, not its own. ERPNext zeroes the return's own outstanding only for
+	non-POS returns, so a POS return keeps -grand_total there and would be counted twice.
+	"""
+	if inv.get("is_return") and inv.get("return_against") and not inv.get("update_outstanding_for_self"):
+		return 0
+	return inv.outstanding_amount
 
 
 def get_report_summary(data, all_modes):
