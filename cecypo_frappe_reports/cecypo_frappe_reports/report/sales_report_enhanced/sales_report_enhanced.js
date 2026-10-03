@@ -62,6 +62,14 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			options: "User",
 		},
 		{
+			// Shown in onload only when Sales Invoice has a custom_sale_type field
+			fieldname: "custom_sale_type",
+			label: __("Sale Type"),
+			fieldtype: "Select",
+			options: [""],
+			hidden: 1,
+		},
+		{
 			fieldname: "with_outstandings",
 			label: __("With Outstandings"),
 			fieldtype: "Check",
@@ -86,17 +94,17 @@ frappe.query_reports["Sales Report Enhanced"] = {
 		return formatted;
 	},
 	onload(report) {
-		// Add custom_sale_type filter if the field exists on Sales Invoice
+		// Reveal the Sale Type filter if the field exists on Sales Invoice. It must be
+		// declared in `filters` above: fields added via page.add_field are not sent
+		// to the server and do not refresh the report.
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.report.sales_report_enhanced.sales_report_enhanced.get_custom_sale_type_options",
 			callback(r) {
 				if (r.message) {
-					report.page.add_field({
-						fieldname: "custom_sale_type",
-						label: __("Sale Type"),
-						fieldtype: "Select",
-						options: ["", ...r.message],
-					});
+					const sale_type = report.get_filter("custom_sale_type");
+					sale_type.df.options = ["", ...r.message];
+					sale_type.df.hidden = 0;
+					sale_type.refresh();
 				}
 			},
 		});
