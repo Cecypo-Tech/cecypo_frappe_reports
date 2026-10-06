@@ -170,6 +170,7 @@ class TestMpesaColumn(unittest.TestCase):
 	def test_mpesa_column_goes_last_after_remarks(self):
 		columns = get_columns(["Cash"], include_remarks=True, include_mpesa=True)
 		self.assertEqual([c["fieldname"] for c in columns[-2:]], ["remarks", "mpesa_transid"])
+		self.assertEqual([c["align"] for c in columns[-2:]], ["left", "left"])
 
 	def test_no_mpesa_column_unless_asked_for(self):
 		self.assertNotIn("mpesa_transid", [c["fieldname"] for c in get_columns(["Cash"])])
