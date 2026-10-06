@@ -341,6 +341,8 @@ def get_columns(all_modes, include_remarks=False, include_mpesa=False):
 				"fieldname": "remarks",
 				"fieldtype": "Small Text",
 				"width": 250,
+				# Datatable right-aligns a column whose first value looks numeric, "" included
+				"align": "left",
 			}
 		)
 
@@ -351,6 +353,8 @@ def get_columns(all_modes, include_remarks=False, include_mpesa=False):
 				"fieldname": "mpesa_transid",
 				"fieldtype": "Data",
 				"width": 200,
+				# Datatable right-aligns a column whose first value looks numeric, "" included
+				"align": "left",
 			}
 		)
 
