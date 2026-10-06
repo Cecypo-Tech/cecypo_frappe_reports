@@ -11,6 +11,7 @@ from cecypo_frappe_reports.cecypo_frappe_reports.report.sales_report_enhanced.sa
 	get_columns,
 	get_data,
 	get_direct_payments,
+	merge_transids,
 )
 
 
@@ -153,3 +154,28 @@ class TestRemarksColumn(unittest.TestCase):
 	def test_rows_leave_remarks_out_otherwise(self):
 		data = get_data([self._inv(remarks="Deliver after 5pm")], {}, [])
 		self.assertNotIn("remarks", data[0])
+
+
+class TestMpesaColumn(unittest.TestCase):
+	def test_receipts_are_unique_and_comma_separated_per_invoice(self):
+		# POS-00243 on dev: one POS Phone row holds a comma list; a register receipt repeats one
+		rows = [
+			frappe._dict(parent="POS-1", transid="UGA030DJDF,UGA030DJDD"),
+			frappe._dict(parent="POS-1", transid="UGA030DJDD"),
+			frappe._dict(parent="POS-1", transid="UGA030DJD7"),
+			frappe._dict(parent="POS-2", transid=None),
+		]
+		self.assertEqual(merge_transids(rows), {"POS-1": "UGA030DJD7, UGA030DJDD, UGA030DJDF"})
+
+	def test_mpesa_column_goes_last_after_remarks(self):
+		columns = get_columns(["Cash"], include_remarks=True, include_mpesa=True)
+		self.assertEqual([c["fieldname"] for c in columns[-2:]], ["remarks", "mpesa_transid"])
+
+	def test_no_mpesa_column_unless_asked_for(self):
+		self.assertNotIn("mpesa_transid", [c["fieldname"] for c in get_columns(["Cash"])])
+
+	def test_rows_carry_the_receipts(self):
+		inv = _invoice(100, 100, 0)
+		data = get_data([inv], {}, [], mpesa_map={"CS-1": "A1, B2"})
+		self.assertEqual(data[0]["mpesa_transid"], "A1, B2")
+		self.assertNotIn("mpesa_transid", get_data([inv], {}, [])[0])

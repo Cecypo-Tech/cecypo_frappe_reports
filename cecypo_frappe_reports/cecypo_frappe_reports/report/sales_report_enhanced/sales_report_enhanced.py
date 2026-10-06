@@ -15,13 +15,17 @@ def execute(filters=None):
 		filters = frappe._dict({})
 
 	include_remarks = bool(filters.get("include_remarks"))
+	include_mpesa = (
+		bool(filters.get("include_mpesa")) and "frappe_mpsa_payments" in frappe.get_installed_apps()
+	)
 	invoices = get_invoices(filters)
 	if not invoices:
-		return get_columns([], include_remarks), [], None, None, None
+		return get_columns([], include_remarks, include_mpesa), [], None, None, None
 
 	payment_map, all_modes = get_payment_map(invoices)
-	columns = get_columns(all_modes, include_remarks)
-	data = get_data(invoices, payment_map, all_modes, include_remarks)
+	mpesa_map = get_mpesa_transids([inv.name for inv in invoices]) if include_mpesa else None
+	columns = get_columns(all_modes, include_remarks, include_mpesa)
+	data = get_data(invoices, payment_map, all_modes, include_remarks, mpesa_map)
 	report_summary = get_report_summary(data, all_modes)
 
 	return columns, data, None, None, report_summary
@@ -90,10 +94,7 @@ def get_invoices(filters):
 	if filters.get("warehouse"):
 		sii = frappe.qb.DocType("Sales Invoice Item")
 		warehouse_sub = (
-			frappe.qb.from_(sii)
-			.select(sii.parent)
-			.where(sii.warehouse == filters.warehouse)
-			.distinct()
+			frappe.qb.from_(sii).select(sii.parent).where(sii.warehouse == filters.warehouse).distinct()
 		)
 		query = query.where(si.name.isin(warehouse_sub))
 
@@ -108,11 +109,7 @@ def get_invoices(filters):
 		pe = frappe.qb.DocType("Payment Entry")
 
 		# POS-style direct payments (Sales Invoice Payment child table)
-		direct = (
-			frappe.qb.from_(sip)
-			.select(sip.parent)
-			.where(sip.mode_of_payment == filters.mode_of_payment)
-		)
+		direct = frappe.qb.from_(sip).select(sip.parent).where(sip.mode_of_payment == filters.mode_of_payment)
 
 		# Non-POS payments via Payment Entry → Payment Entry Reference
 		via_pe = (
@@ -232,7 +229,52 @@ def get_direct_payments(rows, invoices):
 	return payment_map, modes_set
 
 
-def get_columns(all_modes, include_remarks=False):
+def get_mpesa_transids(invoice_names):
+	"""M-Pesa receipt numbers per invoice, as "ID1, ID2".
+
+	A receipt reaches an invoice two ways: an `Mpesa C2B Payment Register` row whose
+	Payment Entry is allocated to it, or a POS `Phone` payment row (STK push) carrying
+	the receipt in `reference_no`, sometimes as a comma list.
+	"""
+	reg = frappe.qb.DocType("Mpesa C2B Payment Register")
+	per = frappe.qb.DocType("Payment Entry Reference")
+	pe = frappe.qb.DocType("Payment Entry")
+	via_register = (
+		frappe.qb.from_(reg)
+		.inner_join(pe)
+		.on(pe.name == reg.payment_entry)
+		.inner_join(per)
+		.on(per.parent == pe.name)
+		.select(per.reference_name.as_("parent"), reg.transid)
+		.where(pe.docstatus == 1)
+		.where(per.reference_doctype == "Sales Invoice")
+		.where(per.reference_name.isin(invoice_names))
+		.run(as_dict=True)
+	)
+
+	sip = frappe.qb.DocType("Sales Invoice Payment")
+	via_pos = (
+		frappe.qb.from_(sip)
+		.select(sip.parent, sip.reference_no.as_("transid"))
+		.where(sip.parent.isin(invoice_names))
+		.where(sip.type == "Phone")
+		.where(fn.Coalesce(sip.reference_no, "") != "")
+		.run(as_dict=True)
+	)
+
+	return merge_transids(via_register + via_pos)
+
+
+def merge_transids(rows):
+	ids = {}
+	for row in rows:
+		for transid in (row.transid or "").split(","):
+			if transid.strip():
+				ids.setdefault(row.parent, set()).add(transid.strip())
+	return {parent: ", ".join(sorted(t)) for parent, t in ids.items()}
+
+
+def get_columns(all_modes, include_remarks=False, include_mpesa=False):
 	columns = [
 		{
 			"label": _("Voucher Type"),
@@ -302,10 +344,20 @@ def get_columns(all_modes, include_remarks=False):
 			}
 		)
 
+	if include_mpesa:
+		columns.append(
+			{
+				"label": _("M-Pesa Trans ID"),
+				"fieldname": "mpesa_transid",
+				"fieldtype": "Data",
+				"width": 200,
+			}
+		)
+
 	return columns
 
 
-def get_data(invoices, payment_map, all_modes, include_remarks=False):
+def get_data(invoices, payment_map, all_modes, include_remarks=False, mpesa_map=None):
 	data = []
 	for inv in invoices:
 		is_return = bool(inv.is_return)
@@ -327,6 +379,9 @@ def get_data(invoices, payment_map, all_modes, include_remarks=False):
 
 		if include_remarks:
 			row["remarks"] = inv.get("remarks") or ""
+
+		if mpesa_map is not None:
+			row["mpesa_transid"] = mpesa_map.get(inv.name, "")
 
 		data.append(row)
 

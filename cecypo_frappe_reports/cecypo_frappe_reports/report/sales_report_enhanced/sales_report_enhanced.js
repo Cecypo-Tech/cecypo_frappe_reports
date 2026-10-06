@@ -80,6 +80,14 @@ frappe.query_reports["Sales Report Enhanced"] = {
 			fieldtype: "Check",
 			default: 0,
 		},
+		{
+			// Shown in onload only when frappe_mpsa_payments is installed
+			fieldname: "include_mpesa",
+			label: __("M-Pesa"),
+			fieldtype: "Check",
+			default: 0,
+			hidden: 1,
+		},
 	],
 	formatter(value, row, column, data, default_formatter) {
 		let formatted;
@@ -108,6 +116,12 @@ frappe.query_reports["Sales Report Enhanced"] = {
 				}
 			},
 		});
+
+		if (frappe.boot.versions?.frappe_mpsa_payments) {
+			const mpesa = report.get_filter("include_mpesa");
+			mpesa.df.hidden = 0;
+			mpesa.refresh();
+		}
 
 		// Compact report summary styling
 		let style = document.createElement("style");
