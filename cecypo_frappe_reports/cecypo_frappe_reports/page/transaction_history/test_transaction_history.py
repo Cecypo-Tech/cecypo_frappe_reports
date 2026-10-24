@@ -6,7 +6,8 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
 
 from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-	get_stock_card, search_items,
+	get_stock_card,
+	search_items,
 )
 
 
@@ -612,11 +613,14 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		return si
 
 	def test_sales_only_user_gets_receivables_from_invoices(self):
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			get_balance_basis, get_party_details, get_receivables, get_receivables_detail,
-		)
-
 		from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_balance_basis,
+			get_party_details,
+			get_receivables,
+			get_receivables_detail,
+		)
 
 		si = self._overdue_invoice()
 
@@ -648,7 +652,8 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 
 	def test_accounts_user_keeps_the_ledger_report(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			get_balance_basis, get_party_details,
+			get_balance_basis,
+			get_party_details,
 		)
 
 		self.assertTrue(frappe.has_permission("Journal Entry", "read"))  # Administrator
@@ -659,7 +664,9 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 	def test_fallback_ageing_matches_erpnext_buckets(self):
 		from frappe.utils import add_days, getdate, today
 
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import _ageing
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			_ageing,
+		)
 
 		as_of = getdate(today())
 		for days_past_due, bucket in ((-5, "range0"), (0, "range1"), (30, "range1"), (31, "range2"), (60, "range2"), (90, "range3"), (120, "range4"), (121, "range5")):
@@ -669,7 +676,9 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			self.assertEqual(sum(v for k, v in row.items() if k.startswith("range")), 10.0)
 
 	def test_fallback_respects_user_permissions(self):
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import get_receivables
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_receivables,
+		)
 
 		self._overdue_invoice()
 		email = self._as_sales_only_user()
@@ -687,7 +696,8 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 
 	def test_fallback_respects_company_user_permission(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			get_party_details, get_receivables,
+			get_party_details,
+			get_receivables,
 		)
 
 		self._overdue_invoice()
@@ -706,7 +716,9 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			frappe.set_user("Administrator")
 
 	def test_party_details_refuses_a_customer_outside_user_permissions(self):
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import get_party_details
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_party_details,
+		)
 
 		email = self._as_sales_only_user()
 		if not frappe.db.exists("Customer", "_Test Customer 1"):
@@ -761,10 +773,12 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertIn("stock_value", d["stock_metrics"])
 
 	def test_supplier_endpoints_hide_valuation_for_cost_blind_user(self):
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			get_supplier_history, get_supplier_item_transactions,
-		)
 		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_supplier_history,
+			get_supplier_item_transactions,
+		)
 
 		make_purchase_receipt(
 			item_code="_Test Item", qty=1, rate=50, warehouse="_Test Warehouse - _TC", supplier="_Test Supplier",
@@ -797,7 +811,8 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 
 	def test_permitted_warehouses_respects_user_permission(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			_permitted_warehouses, _warehouse_filter,
+			_permitted_warehouses,
+			_warehouse_filter,
 		)
 
 		email = self._as_warehouse_restricted_user()
@@ -814,11 +829,13 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		)
 
 	def test_item_history_scopes_to_permitted_warehouses(self):
-		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-			get_item_history, get_warehouse_stock,
-		)
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_item_history,
+			get_warehouse_stock,
+		)
 
 		def metrics(**kw):
 			return get_item_history(item="_Test Item", company="_Test Company", **kw)["stock_metrics"]
@@ -867,10 +884,11 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertEqual(metrics(warehouse="_Test Warehouse 1 - _TC")["pending_so_qty"], 4)
 
 	def test_open_orders_without_warehouse_still_listed_for_unrestricted_user(self):
+		from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
+
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_item_history,
 		)
-		from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
 
 		po = create_purchase_order(item_code="_Test Item", qty=3, rate=10, do_not_save=True)
 		po.items[0].warehouse = None
@@ -971,25 +989,66 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertIn("valuation_rate", last)
 		self.assertIn("value", last)
 
+	def _last_qty_by_warehouse(self, item, before=None, upto=None):
+		"""Independent oracle: sum of each company warehouse's last qty_after_transaction."""
+		whs = frappe.get_all(
+			"Warehouse", {"company": "_Test Company", "is_group": 0, "disabled": 0}, pluck="name")
+		total = 0
+		for w in whs:
+			cond, args = "", [item, "_Test Company", w]
+			if before:
+				cond, args = "and posting_date < %s", [*args, before]
+			if upto:
+				cond, args = "and posting_date <= %s", [*args, upto]
+			row = frappe.db.sql(
+				f"""select qty_after_transaction from `tabStock Ledger Entry`
+				where item_code=%s and company=%s and warehouse=%s and is_cancelled=0 {cond}
+				order by posting_datetime desc, creation desc limit 1""",
+				args,
+			)
+			total += flt(row[0][0]) if row else 0
+		return flt(total, 2)
+
 	def test_stock_card_multi_warehouse_running_balance_and_opening(self):
 		from frappe.utils import add_days, today
 
 		self._receipt(qty=10, warehouse="_Test Warehouse - _TC", posting_date=add_days(today(), -20))
 		self._receipt(qty=5, warehouse="_Test Warehouse 1 - _TC", posting_date=add_days(today(), -2))
-		d = get_stock_card(item="_Test Item", company="_Test Company", from_date=add_days(today(), -5))
+		start = add_days(today(), -5)
+		# dev data holds future-dated SLEs, so bound the card at today
+		d = get_stock_card(item="_Test Item", company="_Test Company", from_date=start, to_date=today())
 		self.assertFalse(d["single_warehouse"])
-		whs = frappe.get_all(
-			"Warehouse", {"company": "_Test Company", "is_group": 0, "disabled": 0}, pluck="name")
-		opening = frappe.db.sql(
-			"""select coalesce(sum(actual_qty), 0) from `tabStock Ledger Entry`
-			where item_code='_Test Item' and is_cancelled=0 and posting_date < %s and warehouse in %s""",
-			(add_days(today(), -5), whs),
-		)[0][0]
-		self.assertEqual(d["opening_qty"], flt(opening, 2))
-		in_range = sum(r["qty_in"] - r["qty_out"] for r in d["rows"])
-		self.assertEqual(d["rows"][-1]["balance"], flt(flt(opening) + in_range, 2))
+		self.assertEqual(d["opening_qty"], self._last_qty_by_warehouse("_Test Item", before=start))
+		self.assertEqual(d["rows"][-1]["balance"], self._last_qty_by_warehouse("_Test Item", upto=today()))
 		self.assertEqual(d["closing_qty"], d["rows"][-1]["balance"])
+		# other tests in this class leave same-window receipts, so qty_in is a lower bound
 		self.assertGreaterEqual(d["totals"]["qty_in"], 5)
+
+	def test_stock_card_counts_stock_reconciliation(self):
+		from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import (
+			create_stock_reconciliation,
+		)
+		from frappe.utils import add_days, today
+
+		wh = "_Test Warehouse 2 - _TC"
+		self._receipt(qty=10, warehouse=wh, posting_date=add_days(today(), -3))
+		before = frappe.db.sql(
+			"""select qty_after_transaction from `tabStock Ledger Entry`
+			where item_code='_Test Item' and warehouse=%s and is_cancelled=0
+			order by posting_datetime desc, creation desc limit 1""",
+			wh,
+		)[0][0]
+		sr = create_stock_reconciliation(
+			item_code="_Test Item", warehouse=wh, qty=25, rate=100,
+			company="_Test Company", posting_date=add_days(today(), -1),
+		)
+		start = add_days(today(), -2)
+		d = get_stock_card(item="_Test Item", company="_Test Company", from_date=start, to_date=today())
+		row = next(r for r in d["rows"] if r["voucher_no"] == sr.name)
+		self.assertEqual(row["qty_in"], flt(25 - flt(before), 2))
+		self.assertEqual(row["rate"], 100)
+		self.assertEqual(d["opening_qty"], self._last_qty_by_warehouse("_Test Item", before=start))
+		self.assertEqual(d["closing_qty"], self._last_qty_by_warehouse("_Test Item", upto=today()))
 
 	def test_stock_card_excludes_cancelled_entries(self):
 		se = self._receipt(qty=7)

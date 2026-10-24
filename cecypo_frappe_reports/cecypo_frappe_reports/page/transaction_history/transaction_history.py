@@ -480,8 +480,9 @@ def get_warehouse_stock(item_code, company):
 @frappe.whitelist()
 def search_items(company, txt="", item_group=None, limit=100):
 	"""Item picker data: matching items with sell price, stock per permitted warehouse and (if allowed) cost."""
-	from cecypo_frappe_reports.cecypo_frappe_reports.api import item_query
 	from frappe.utils.nestedset import get_descendants_of
+
+	from cecypo_frappe_reports.cecypo_frappe_reports.api import item_query
 
 	txt = (txt or "").strip()
 	limit = cint(limit) or 100
@@ -582,14 +583,24 @@ def _fill_stock_card(out, item, whs, from_date, to_date, can_cost):
 		.where(Sle.is_cancelled == 0)
 		.where(Sle.docstatus < 2)
 	)
+	# running = {warehouse: (qty, value)}; Stock Reconciliation rows have actual_qty 0, so track
+	# qty_after_transaction per warehouse instead of summing actual_qty.
+	running = {w: (0, 0) for w in whs}
 	if from_date:
-		opening = (
-			base.where(Sle.posting_date < getdate(from_date))
-			.select(fn.Sum(Sle.actual_qty), fn.Sum(Sle.stock_value_difference))
-			.run()[0]
-		)
-		out["opening_qty"], out["opening_value"] = flt(opening[0], 2), flt(opening[1], 2)
+		# ponytail: one query per scope warehouse, switch to a window function if scope grows large
+		for w in whs:
+			last = (
+				base.where(Sle.warehouse == w).where(Sle.posting_date < getdate(from_date))
+				.select(Sle.qty_after_transaction, Sle.stock_value)
+				.orderby(Sle.posting_datetime, order=frappe.qb.desc)
+				.orderby(Sle.creation, order=frappe.qb.desc)
+				.limit(1).run()
+			)
+			if last:
+				running[w] = (flt(last[0][0]), flt(last[0][1]))
 		base = base.where(Sle.posting_date >= getdate(from_date))
+	out["opening_qty"] = flt(sum(q for q, _v in running.values()), 2)
+	out["opening_value"] = flt(sum(v for _q, v in running.values()), 2)
 	if to_date:
 		base = base.where(Sle.posting_date <= getdate(to_date))
 	entries = (
@@ -606,18 +617,20 @@ def _fill_stock_card(out, item, whs, from_date, to_date, can_cost):
 	entries = entries[:STOCK_CARD_LIMIT]
 	party, rate = _stock_card_party_rates(entries)
 
-	single = out["single_warehouse"]
-	qty, value = out["opening_qty"], out["opening_value"]
 	for e in entries:
-		qty_in, qty_out = max(flt(e.actual_qty), 0), max(-flt(e.actual_qty), 0)
-		qty = flt(e.qty_after_transaction, 2) if single else flt(qty + flt(e.actual_qty), 2)
-		value = flt(e.stock_value, 2) if single else flt(value + flt(e.stock_value_difference), 2)
+		delta = flt(e.qty_after_transaction) - running[e.warehouse][0]
+		qty_in, qty_out = max(delta, 0), max(-delta, 0)
+		running[e.warehouse] = (flt(e.qty_after_transaction), flt(e.stock_value))
+		qty = flt(sum(q for q, _v in running.values()), 2)
+		value = flt(sum(v for _q, v in running.values()), 2)
 		if e.voucher_type in PARTY_VOUCHERS:
 			r = rate.get((e.voucher_type, e.voucher_detail_no))
-		elif can_cost:
-			r = e.incoming_rate if e.actual_qty > 0 else e.outgoing_rate
-		else:
+		elif not can_cost:
 			r = None
+		elif e.voucher_type == "Stock Reconciliation":
+			r = e.valuation_rate
+		else:
+			r = e.incoming_rate if e.actual_qty > 0 else e.outgoing_rate
 		out["rows"].append({
 			"posting_date": e.posting_date, "posting_time": str(e.posting_time or ""),
 			"voucher_type": e.voucher_type, "voucher_no": e.voucher_no,
@@ -630,7 +643,7 @@ def _fill_stock_card(out, item, whs, from_date, to_date, can_cost):
 		out["totals"]["qty_in"] += qty_in
 		out["totals"]["qty_out"] += qty_out
 	out["totals"] = {k: flt(v, 2) for k, v in out["totals"].items()}
-	out["closing_qty"] = qty
+	out["closing_qty"] = flt(sum(q for q, _v in running.values()), 2)
 	_strip_cost(out["rows"])
 
 
@@ -658,8 +671,8 @@ def get_party_details(party_type, party, company=None, as_of_date=None, show_fut
 	was opened from, for the same as_of_date/show_future_payments — see the two figures never
 	being independently derived.
 	"""
-	from pypika import Case
 	from frappe.utils import getdate, nowdate
+	from pypika import Case
 
 	frappe.has_permission("Sales Invoice" if party_type.lower() == "customer" else "Purchase Invoice", "read", throw=True)
 	frappe.has_permission("Customer" if party_type.lower() == "customer" else "Supplier", "read", doc=party, throw=True)
