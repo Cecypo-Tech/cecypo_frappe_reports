@@ -1119,3 +1119,9 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 	def test_export_table_rejects_oversized_payload(self):
 		rows = [["x"]] * 50_001
 		self.assertRaises(frappe.ValidationError, export_table, "Big", json.dumps(rows))
+		self.assertRaises(frappe.ValidationError, export_table, "Wide", json.dumps([["x"] * 101]))
+		self.assertRaises(frappe.ValidationError, export_table, "Shape", json.dumps({"a": 1}))
+
+	def test_export_table_filename_is_safe(self):
+		export_table('Sales / "F071"\r\nX', json.dumps([["a"], ["b"]]))
+		self.assertRegex(frappe.response["filename"], r"^sales_f071_x_\d{4}-\d{2}-\d{2}\.xlsx$")

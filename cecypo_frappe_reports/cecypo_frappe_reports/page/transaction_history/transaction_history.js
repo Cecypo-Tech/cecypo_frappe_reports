@@ -811,9 +811,15 @@ class TransactionHistoryPage {
 	_table_rows($table) {
 		const text = (el) => $(el).text().replace(/[↕↑↓▲▼▶]/g, "").replace(/\s+/g, " ").trim(); // drop sort/expand glyphs
 		const num = (t) => {
-			// "KSh 1,234.50" / "$1,234.50" / "1,234.50" → number; "SINV-4687", "F071", dates stay text
-			const n = t.replace(/^(-?)(?:[A-Za-z]{1,4}\s|[^\w\s-]\s?)/, "$1").replace(/,/g, "");
-			return /^-?\d+(\.\d+)?$/.test(n) ? parseFloat(n) : t;
+			// "1,234.5", "40", "-3.5", "KSh 1,234.50", "$1,234", "-KSh 50.00" → number.
+			// "SINV-4687", "F071", "00123", "+254…", dates, "12.5%" and "Tile 600" stay text: a
+			// currency prefix only counts when the amount is grouped or has two decimals.
+			const m = t.match(/^(-?)(?:([A-Za-z]{1,4})\s|([$€£¥₹])\s?)?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?$/);
+			if (!m) return t;
+			const [, sign, code, sym, int, dec = ""] = m;
+			if ((code || sym) && !int.includes(",") && dec.length !== 3) return t;
+			if (int.length > 1 && int[0] === "0") return t;
+			return parseFloat(sign + int.replace(/,/g, "") + dec);
 		};
 		const out = [];
 		$table.children("thead, tbody, tfoot").children("tr").each((_, tr) => {
@@ -824,7 +830,9 @@ class TransactionHistoryPage {
 				this._table_rows($inner).forEach(r => out.push(["", ...r]));
 				return;
 			}
-			const cells = $tr.children("th, td").toArray().filter(c => !$(c).find("input[type=checkbox]").length);
+			const $cells = $tr.children("th, td");
+			if ($cells.length === 1 && ($cells.attr("colspan") || 1) > 1) return; // "No rows found" / "Loading…" placeholders
+			const cells = $cells.toArray().filter(c => !$(c).find("input[type=checkbox]").length);
 			out.push(cells.map(c => num(text(c))));
 		});
 		return out;

@@ -1,9 +1,11 @@
 # Copyright (c) 2026, Cecypo and contributors
 # For license information, please see license.txt
 
+import re
+
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, getdate
+from frappe.utils import cint, cstr, flt, getdate, today
 from pypika import functions as fn
 
 BILLING_STATS_ROLES = {"Accounts Manager", "Sales Manager"}
@@ -1524,17 +1526,19 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 
 
 EXPORT_ROW_LIMIT = 50_000
+EXPORT_COL_LIMIT = 100
 
 
 @frappe.whitelist()
 def export_table(title, rows):
 	"""Download a rendered page table as .xlsx. `rows` is a JSON list of lists, header first.
 	The browser sends exactly what it displayed, so permission-gated columns were never in it."""
-	from frappe.utils import today
 	from frappe.utils.xlsxutils import build_xlsx_response
 
 	rows = frappe.parse_json(rows) or []
+	if not isinstance(rows, list) or any(not isinstance(r, list) or len(r) > EXPORT_COL_LIMIT for r in rows):
+		frappe.throw(_("Invalid export payload"))
 	if len(rows) > EXPORT_ROW_LIMIT:
 		frappe.throw(_("Too many rows to export ({0}). Narrow the filters.", [len(rows)]))
-	name = frappe.scrub(frappe.utils.cstr(title))[:60] or "table"
+	name = re.sub(r"[^\w]+", "_", cstr(title)).strip("_").lower()[:60] or "table"
 	build_xlsx_response(rows, f"{name}_{today()}")
