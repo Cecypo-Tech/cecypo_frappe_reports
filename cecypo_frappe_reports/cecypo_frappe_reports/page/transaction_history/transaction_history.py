@@ -37,7 +37,7 @@ def _permitted_warehouses(company):
 	"""Company's enabled non-group warehouses, narrowed to the user's Warehouse User Permissions."""
 	whs = frappe.get_all("Warehouse", {"company": company, "is_group": 0, "disabled": 0}, pluck="name")
 	allowed = frappe.permissions.get_user_permissions(frappe.session.user).get("Warehouse")
-	if allowed:
+	if allowed:  # every Warehouse User Permission restricts, whatever its applicable_for (stricter than get_list)
 		allowed = {d.get("doc") for d in allowed}
 		whs = [w for w in whs if w in allowed]
 	return whs
@@ -485,12 +485,14 @@ def search_items(company, txt="", item_group=None, limit=100):
 	from cecypo_frappe_reports.cecypo_frappe_reports.api import item_query
 
 	txt = (txt or "").strip()
-	limit = cint(limit) or 100
+	limit = min(max(cint(limit) or 100, 1), 100)
 	out = {"can_see_cost": _can_see_cost(), "warehouses": [], "truncated": False, "items": []}
 	if len(txt) < 2 and not item_group:
 		return out
 
 	filters = {}
+	if item_group and not frappe.db.exists("Item Group", item_group):
+		return out
 	if item_group:
 		filters["item_group"] = ["in", [item_group, *get_descendants_of("Item Group", item_group)]]
 	found = item_query(
@@ -541,7 +543,7 @@ def search_items(company, txt="", item_group=None, limit=100):
 			"stock_uom": m.stock_uom,
 			"sell_price": prices[code][1] if code in prices else None,
 			"stock": by_wh, "total_qty": total,
-			"cost": flt(value.get(code, 0) / total, 2) if total else None,
+			"cost": flt(value.get(code, 0) / total, 2) if total > 0 else None,
 		})
 	_strip_cost(out["items"])
 	out["warehouses"] = sorted(wh_qty, key=lambda w: -wh_qty[w])

@@ -742,11 +742,16 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		)
 
 	def test_item_history_hides_cost_for_user_without_sle_read(self):
+		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
 			get_item_history,
 		)
 
 		self._receipt()
+		make_purchase_receipt(
+			item_code="_Test Item", qty=1, rate=50, warehouse="_Test Warehouse - _TC", supplier="_Test Supplier",
+		)
 		email = self._as_sales_only_user()
 		frappe.set_user(email)
 		try:
@@ -756,6 +761,7 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			self.assertNotIn("avg_rate", d["stock_metrics"])
 			self.assertNotIn("stock_value", d["stock_metrics"])
 			self.assertIn("current_stock", d["stock_metrics"])
+			self.assertGreaterEqual(len(d["purchases"]), 1)
 			for r in d["purchases"]:
 				self.assertNotIn("valuation_rate", r)
 		finally:
@@ -946,7 +952,8 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		qty = sum(b.actual_qty for b in bins)
 		self.assertEqual(row["total_qty"], flt(qty, 2))
 		self.assertTrue(res["can_see_cost"])
-		self.assertEqual(row["cost"], flt(sum(b.stock_value for b in bins) / qty, 2))
+		# cost is only meaningful for positive stock (the shared test DB can carry negative bins)
+		self.assertEqual(row["cost"], flt(sum(b.stock_value for b in bins) / qty, 2) if qty > 0 else None)
 		frappe.set_user(self._as_sales_only_user())
 		try:
 			res = search_items(company="_Test Company", txt="_Test Item")

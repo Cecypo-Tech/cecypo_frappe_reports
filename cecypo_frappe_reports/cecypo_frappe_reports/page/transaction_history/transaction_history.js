@@ -290,14 +290,22 @@ class TransactionHistoryPage {
 		const make = (parent, df) =>
 			frappe.ui.form.make_control({ parent: $(m).find(parent)[0], df, render_input: true });
 
-		// Item tab
+		// Item tab. Any filter change re-runs the selected items; debounced so a burst of
+		// change events (and the picker's warehouse-cell click) yields exactly one fetch.
+		const rerun = () => {
+			clearTimeout(this._rerun_timer);
+			this._rerun_timer = setTimeout(() => {
+				if (this._item_panel.items.length) this._run_item_history();
+			}, 150);
+		};
+		this._rerun_item_history = rerun;
 		this.controls.item_company = make(".ctrl-item-company", {
-			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1, change: rerun,
 		});
-		this.controls.item_from = make(".ctrl-item-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
-		this.controls.item_to = make(".ctrl-item-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
+		this.controls.item_from = make(".ctrl-item-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date"), change: rerun });
+		this.controls.item_to = make(".ctrl-item-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date"), change: rerun });
 		this.controls.item_warehouse = make(".ctrl-item-warehouse", {
-			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"),
+			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"), change: rerun,
 		});
 		if (default_company) this.controls.item_company.set_value(default_company);
 
@@ -426,8 +434,6 @@ class TransactionHistoryPage {
 		this._render_pricing_checklist();
 	}
 
-	// ── Item History ─────────────────────────────────────────────────────────
-
 	// ── Item picker ──────────────────────────────────────────────────────────
 
 	_open_item_picker() {
@@ -506,10 +512,13 @@ class TransactionHistoryPage {
 			const code = $(e.currentTarget).attr("data-item");
 			const wh = $(e.currentTarget).attr("data-warehouse");
 			const p = this._item_panel;
-			p.items = [{ item_code: code, item_name: (dialog._rows[code] || {}).item_name || code }];
+			dialog._sel.set(code, { item_code: code, item_name: (dialog._rows[code] || {}).item_name || code });
+			p.items = [...dialog._sel.values()];
+			p.active = code;
 			p.view = "card";
 			dialog.hide();
-			Promise.resolve(wh ? this.controls.item_warehouse.set_value(wh) : null).then(() => this._run_item_history());
+			if (wh) this.controls.item_warehouse.set_value(wh);
+			this._rerun_item_history(); // debounced with the warehouse change event: one run
 		});
 
 		this._picker_search(dialog);
@@ -627,7 +636,7 @@ class TransactionHistoryPage {
 
 		p.history = {};
 		p.card = {};
-		this._show_item(p.items[0].item_code);
+		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
 
 		p.items.forEach(item => {
 			frappe.call({
@@ -638,6 +647,12 @@ class TransactionHistoryPage {
 					p.can_see_cost = r.message.can_see_cost !== false;
 					p.history[item.item_code] = r.message;
 					if (p.active === item.item_code && p.view === "history") this._show_item(item.item_code);
+				},
+				error: () => {
+					if (gen !== this._run_generation) return;
+					if (p.active === item.item_code && p.view === "history") {
+						$(this.page.main).find(".item-content").html(`<div class="text-muted" style="padding:20px">${__("Could not load item history.")}</div>`);
+					}
 				},
 			});
 		});
