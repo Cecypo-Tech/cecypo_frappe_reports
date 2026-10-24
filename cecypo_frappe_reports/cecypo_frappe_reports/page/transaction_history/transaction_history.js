@@ -144,6 +144,11 @@ class TransactionHistoryPage {
 			.th-picker-table th.th-pick-sticky { z-index: 3; }
 			.th-pick-sticky.th-pick-box { width: 32px; min-width: 32px; max-width: 32px; }
 			.th-pick-sticky.th-pick-code { left: 32px; }
+			.th-card-table th, .th-card-table td.th-card-sticky { background: var(--fg-color); }
+			.th-card-sticky { position: sticky; z-index: 1; }
+			.th-card-table th.th-card-sticky { z-index: 3; }
+			.th-card-date { left: 0; min-width: 92px; }
+			.th-card-voucher { left: 92px; }
 			.th-pick-wh { cursor: pointer; }
 			.th-pick-wh:hover { text-decoration: underline; color: var(--primary); }
 		`;
@@ -650,11 +655,112 @@ class TransactionHistoryPage {
 		$(this.page.main).find(".item-results-search").trigger("input"); // keep the active row filter
 	}
 
-	// Placeholder — Task 6 replaces this with the real Stock Card.
+	// ── Stock card ───────────────────────────────────────────────────────────
+
 	_load_stock_card(item_code) {
-		$(this.page.main).find(".item-content").html(
-			`<div class="text-muted" style="padding:20px">${__("Stock Card loads in the next task")}</div>`
-		);
+		const p = this._item_panel;
+		const $content = $(this.page.main).find(".item-content");
+		if (p.card[item_code]) { this._paint_stock_card(item_code); return; }
+		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
+		const gen = this._run_generation;
+		const cache = p.card;
+		const from_date = this.controls.item_from.get_value() || null;
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_stock_card",
+			args: {
+				item: item_code,
+				company: this.controls.item_company.get_value(),
+				from_date,
+				to_date: this.controls.item_to.get_value() || null,
+				warehouse: this.controls.item_warehouse.get_value() || null,
+			},
+			callback: (r) => {
+				if (!r.message || gen !== this._run_generation || cache !== p.card) return; // stale
+				cache[item_code] = { data: r.message, from_date };
+				if (p.active === item_code && p.view === "card") this._paint_stock_card(item_code);
+			},
+		});
+	}
+
+	_paint_stock_card(item_code) {
+		const p = this._item_panel;
+		const $content = $(this.page.main).find(".item-content");
+		const { data, from_date } = p.card[item_code];
+		const it = p.items.find(i => i.item_code === item_code) || { item_code, item_name: "" };
+		const esc = frappe.utils.escape_html;
+		$content.empty().append(`<div style="font-weight:600;margin-bottom:8px">${__("Stock Card")}: ${esc(it.item_code)} ${esc(it.item_name)}</div>`);
+		this._render_stock_card(data, $content, from_date);
+		$(this.page.main).find(".item-results-search").trigger("input"); // keep the active row filter
+	}
+
+	_render_stock_card(data, $container, from_date) {
+		const esc = frappe.utils.escape_html;
+		const bc = this.base_currency;
+		const cost = !!data.can_see_cost;
+		const multi = !data.single_warehouse;
+		const num = (v) => format_number(v, null, 2);
+		const td = (v, extra = "") => `<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);white-space:nowrap;${extra}">${v}</td>`;
+		const right = "text-align:right;";
+		const heads = [["#", ""], [__("Date"), "th-card-sticky th-card-date"], [__("Voucher"), "th-card-sticky th-card-voucher"], [__("Party"), ""]];
+		if (multi) heads.push([__("Warehouse"), ""]);
+		heads.push([__("Rate"), "r"], [__("Qty In"), "r"], [__("Qty Out"), "r"], [__("Balance"), "r"]);
+		if (cost) heads.push([__("Cost Rate"), "r"], [__("Value Change"), "r"], [__("Stock Value"), "r"]);
+		const ncols = heads.length;
+		const stick = (cls) => `class="${cls}" style="padding:4px 8px;border-bottom:1px solid var(--border-color);white-space:nowrap;"`;
+
+		const rows = [];
+		const bg = (i) => (i % 2 ? "background:var(--control-bg);" : "");
+		let i = 0;
+		if (from_date) {
+			const blanks = (n) => td("").repeat(n);
+			rows.push(`<tr style="font-style:italic;${bg(i++)}">
+				${td("")}<td ${stick("th-card-sticky th-card-date")}>${esc(frappe.datetime.str_to_user(from_date))}</td>
+				<td ${stick("th-card-sticky th-card-voucher")}>${__("Opening")}</td>${td("")}${multi ? td("") : ""}${blanks(3)}
+				${td(`<b>${num(data.opening_qty)}</b>`, right)}
+				${cost ? td("") + td("") + td(data.opening_value != null ? format_currency(data.opening_value, bc) : "", right) : ""}
+			</tr>`);
+		}
+		(data.rows || []).forEach((r, n) => {
+			const b = bg(i++);
+			rows.push(`<tr style="${b}">
+				${td(n + 1)}
+				<td ${stick("th-card-sticky th-card-date")}>${esc(frappe.datetime.str_to_user(r.posting_date))}</td>
+				<td ${stick("th-card-sticky th-card-voucher")}><a href="/app/${esc(frappe.router.slug(r.voucher_type))}/${encodeURIComponent(r.voucher_no)}" target="_blank" rel="noopener">${esc(r.voucher_no)}</a></td>
+				${td(esc(r.party || ""))}
+				${multi ? td(esc(r.warehouse || "")) : ""}
+				${td(r.rate == null ? "—" : format_currency(r.rate, bc), right)}
+				${td(r.qty_in ? num(r.qty_in) : "", right)}
+				${td(r.qty_out ? num(r.qty_out) : "", right + "color:var(--red);")}
+				${td(`<b>${num(r.balance)}</b>`, right)}
+				${cost ? td(r.valuation_rate == null ? "—" : format_currency(r.valuation_rate, bc), right)
+					+ td(r.stock_value_difference == null ? "" : format_currency(r.stock_value_difference, bc), right)
+					+ td(r.value == null ? "" : format_currency(r.value, bc), right) : ""}
+			</tr>`);
+		});
+		if (!rows.length) {
+			rows.push(`<tr><td colspan="${ncols}" class="text-muted" style="padding:20px;text-align:center">${__("No stock movements")}</td></tr>`);
+		}
+		const last = (data.rows || [])[(data.rows || []).length - 1];
+		const closing_value = last ? last.value : data.opening_value;
+		const tf = "font-weight:600;border-top:2px solid var(--border-color);";
+		const foot = `<tr class="th-card-foot">
+			${td("", tf)}<td ${stick("th-card-sticky th-card-date")}><b>${__("Total")}</b></td><td ${stick("th-card-sticky th-card-voucher")}></td>${td("", tf)}${multi ? td("", tf) : ""}${td("", tf)}
+			${td(num(data.totals.qty_in), right + tf)}${td(num(data.totals.qty_out), right + tf + "color:var(--red);")}${td(num(data.closing_qty), right + tf)}
+			${cost ? td("", tf) + td("", tf) + td(closing_value != null ? format_currency(closing_value, bc) : "", right + tf) : ""}
+		</tr>`;
+
+		const thead = heads.map(([label, cls]) =>
+			`<th class="${cls === "r" ? "" : cls}" style="padding:4px 8px;border-bottom:2px solid var(--border-color);color:var(--text-muted);white-space:nowrap;${cls === "r" ? right : ""}">${label}</th>`
+		).join("");
+		$container.append(`
+			${data.truncated ? `<div class="alert alert-warning">${__("Showing the first {0} entries; totals are incomplete. Narrow the date range.", [5000])}</div>` : ""}
+			<div class="th-card-wrap" style="overflow-x:auto">
+				<table class="th-card-table" style="width:100%;font-size:12px;border-collapse:separate;border-spacing:0">
+					<thead><tr>${thead}</tr></thead>
+					<tbody>${rows.join("")}</tbody>
+					<tfoot>${foot}</tfoot>
+				</table>
+			</div>`);
 	}
 
 	_render_item_nav() {
