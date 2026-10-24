@@ -1521,3 +1521,20 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 		r["rate"] = flt(r["rate"], 2)
 		r["base_rate"] = flt(r["base_rate"], 2)
 	return rows
+
+
+EXPORT_ROW_LIMIT = 50_000
+
+
+@frappe.whitelist()
+def export_table(title, rows):
+	"""Download a rendered page table as .xlsx. `rows` is a JSON list of lists, header first.
+	The browser sends exactly what it displayed, so permission-gated columns were never in it."""
+	from frappe.utils import today
+	from frappe.utils.xlsxutils import build_xlsx_response
+
+	rows = frappe.parse_json(rows) or []
+	if len(rows) > EXPORT_ROW_LIMIT:
+		frappe.throw(_("Too many rows to export ({0}). Narrow the filters.", [len(rows)]))
+	name = frappe.scrub(frappe.utils.cstr(title))[:60] or "table"
+	build_xlsx_response(rows, f"{name}_{today()}")

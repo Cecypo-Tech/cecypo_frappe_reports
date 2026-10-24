@@ -1,11 +1,15 @@
 # Copyright (c) 2026, Cecypo and contributors
 # For license information, please see license.txt
 
+import json
+
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
+from frappe.utils.xlsxutils import read_xlsx_file_from_attached_file
 
 from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+	export_table,
 	get_stock_card,
 	search_items,
 )
@@ -1095,3 +1099,23 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			self.assertEqual(d2["rows"], [])
 		finally:
 			frappe.set_user("Administrator")
+
+	# ── export_table ─────────────────────────────────────────────────────────
+
+	def test_export_table_round_trip(self):
+		rows = [["Item", "Qty", "Note"], ["F071", 12.5, "=SUM(A1)"], ["F050", -3, ""]]
+		frappe.response.pop("filecontent", None)
+		export_table("Purchases — F071", json.dumps(rows))
+
+		self.assertEqual(frappe.response["type"], "binary")
+		self.assertTrue(frappe.response["filename"].endswith(".xlsx"))
+		self.assertIn("purchases", frappe.response["filename"])
+		got = read_xlsx_file_from_attached_file(fcontent=frappe.response["filecontent"])
+		self.assertEqual(got[0], ["Item", "Qty", "Note"])
+		self.assertEqual(got[1][:2], ["F071", 12.5])
+		self.assertEqual(got[1][2], "=SUM(A1)")  # written as text, not evaluated
+		self.assertEqual(got[2][1], -3)
+
+	def test_export_table_rejects_oversized_payload(self):
+		rows = [["x"]] * 50_001
+		self.assertRaises(frappe.ValidationError, export_table, "Big", json.dumps(rows))
