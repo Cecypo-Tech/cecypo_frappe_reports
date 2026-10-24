@@ -783,3 +783,78 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			frappe.set_user("Administrator")
 		rows = get_supplier_history(supplier="_Test Supplier", company="_Test Company", source="pr")
 		self.assertIn("last_rate", rows[0])
+
+	def _as_warehouse_restricted_user(self, warehouse="_Test Warehouse - _TC"):
+		email = self._as_sales_only_user()
+		frappe.get_doc({
+			"doctype": "User Permission", "user": email, "allow": "Warehouse", "for_value": warehouse,
+		}).insert(ignore_permissions=True)
+		return email
+
+	def test_permitted_warehouses_respects_user_permission(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			_permitted_warehouses, _warehouse_filter,
+		)
+
+		email = self._as_warehouse_restricted_user()
+		frappe.set_user(email)
+		try:
+			self.assertEqual(_permitted_warehouses("_Test Company"), ["_Test Warehouse - _TC"])
+			self.assertEqual(_warehouse_filter("_Test Company", "_Test Warehouse 1 - _TC"), [])
+			self.assertEqual(_warehouse_filter("_Test Company", None), ["_Test Warehouse - _TC"])
+		finally:
+			frappe.set_user("Administrator")
+		self.assertIsNone(_warehouse_filter("_Test Company", None))
+		self.assertEqual(
+			_warehouse_filter("_Test Company", "_Test Warehouse 1 - _TC"), ["_Test Warehouse 1 - _TC"]
+		)
+
+	def test_item_history_scopes_to_permitted_warehouses(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_item_history, get_warehouse_stock,
+		)
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		# The dev site carries leftover Bin rows, so assert against the pre-existing level.
+		base = get_item_history(
+			item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC"
+		)["stock_metrics"]["current_stock"]
+		self._receipt(qty=10, warehouse="_Test Warehouse - _TC")
+		self._receipt(qty=5, warehouse="_Test Warehouse 1 - _TC")
+		create_sales_invoice(
+			item_code="_Test Item", qty=1, rate=300, update_stock=1,
+			warehouse="_Test Warehouse 1 - _TC", company="_Test Company",
+		)
+		email = self._as_warehouse_restricted_user()
+		frappe.set_user(email)
+		try:
+			d = get_item_history(item="_Test Item", company="_Test Company")
+			self.assertEqual(d["stock_metrics"]["current_stock"], flt(base + 10, 2))
+			self.assertEqual(d["sales"], [])
+			d2 = get_item_history(
+				item="_Test Item", company="_Test Company", warehouse="_Test Warehouse 1 - _TC"
+			)
+			self.assertEqual(d2["stock_metrics"]["current_stock"], 0)
+			self.assertEqual(d2["purchases"], [])
+			whs = [w["warehouse"] for w in get_warehouse_stock("_Test Item", "_Test Company")]
+			# _Test Warehouse may hold negative leftover stock here, so assert on what must be absent.
+			self.assertEqual(set(whs) - {"_Test Warehouse - _TC"}, set())
+		finally:
+			frappe.set_user("Administrator")
+		self.assertIn(
+			"_Test Warehouse 1 - _TC", [w["warehouse"] for w in get_warehouse_stock("_Test Item", "_Test Company")]
+		)
+
+	def test_open_orders_without_warehouse_still_listed_for_unrestricted_user(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_item_history,
+		)
+		from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
+
+		po = create_purchase_order(item_code="_Test Item", qty=3, rate=10, do_not_save=True)
+		po.items[0].warehouse = None
+		po.set_warehouse = None
+		po.insert()
+		po.submit()
+		d = get_item_history(item="_Test Item", company="_Test Company")
+		self.assertIn(po.name, [r["voucher_no"] for r in d["open_po"]])

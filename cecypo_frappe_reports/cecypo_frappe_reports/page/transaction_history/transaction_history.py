@@ -33,6 +33,27 @@ def _strip_cost(rows):
 	return rows
 
 
+def _permitted_warehouses(company):
+	"""Company's enabled non-group warehouses, narrowed to the user's Warehouse User Permissions."""
+	whs = frappe.get_all("Warehouse", {"company": company, "is_group": 0, "disabled": 0}, pluck="name")
+	allowed = frappe.permissions.get_user_permissions(frappe.session.user).get("Warehouse")
+	if allowed:
+		allowed = {d.get("doc") for d in allowed}
+		whs = [w for w in whs if w in allowed]
+	return whs
+
+
+def _warehouse_filter(company, warehouse=None):
+	"""None = unrestricted and no filter (add no clause); [] = nothing allowed; else the IN list."""
+	restricted = bool(frappe.permissions.get_user_permissions(frappe.session.user).get("Warehouse"))
+	if not restricted and not warehouse:
+		return None
+	permitted = _permitted_warehouses(company)
+	if warehouse:
+		return [warehouse] if warehouse in permitted else []
+	return permitted
+
+
 def _highlight_for(overdue_count, outstanding_total, advances_total):
 	if overdue_count > 0:
 		return "red"
@@ -435,6 +456,9 @@ def update_item_price(item_code, price_list, rate):
 @frappe.whitelist()
 def get_warehouse_stock(item_code, company):
 	"""Return stock qty per enabled, non-group warehouse for the given item and company."""
+	permitted = _permitted_warehouses(company)
+	if not permitted:
+		return []
 	Wh = frappe.qb.DocType("Warehouse")
 	Bn = frappe.qb.DocType("Bin")
 	rows = (
@@ -445,6 +469,7 @@ def get_warehouse_stock(item_code, company):
 		.where(Wh.company == company)
 		.where(Wh.disabled == 0)
 		.where(Wh.is_group == 0)
+		.where(Wh.name.isin(permitted))
 		.where(Bn.actual_qty > 0)
 		.orderby(Bn.actual_qty, order=frappe.qb.desc)
 		.run(as_dict=True)
@@ -1048,11 +1073,14 @@ def _get_item_details(item):
 
 
 def _get_stock_metrics(item, company, warehouse=None):
-	filters = {"item_code": item}
-	if warehouse:
-		filters["warehouse"] = warehouse
-
-	bin_rows = frappe.db.get_all("Bin", filters=filters, fields=["actual_qty", "valuation_rate"])
+	whs = _warehouse_filter(company, warehouse)
+	if whs is None:
+		whs = _permitted_warehouses(company)
+	bin_rows = []
+	if whs:
+		bin_rows = frappe.db.get_all(
+			"Bin", filters={"item_code": item, "warehouse": ["in", whs]}, fields=["actual_qty", "valuation_rate"]
+		)
 	total_qty = flt(sum(flt(b.actual_qty) for b in bin_rows), 2)
 	stock_value = flt(sum(flt(b.actual_qty) * flt(b.valuation_rate) for b in bin_rows), 2)
 	avg_rate = flt(stock_value / total_qty, 2) if total_qty else 0.0
@@ -1100,6 +1128,10 @@ def _get_stock_metrics(item, company, warehouse=None):
 
 
 def _get_purchase_rows(item, company, from_date, to_date, warehouse):
+	whs = _warehouse_filter(company, warehouse)
+	if whs == []:
+		return []
+
 	# Purchase Invoice (stock-updating only)
 	pii = frappe.qb.DocType("Purchase Invoice Item")
 	pi = frappe.qb.DocType("Purchase Invoice")
@@ -1126,8 +1158,8 @@ def _get_purchase_rows(item, company, from_date, to_date, warehouse):
 		pi_query = pi_query.where(pi.posting_date >= from_date)
 	if to_date:
 		pi_query = pi_query.where(pi.posting_date <= to_date)
-	if warehouse:
-		pi_query = pi_query.where(pii.warehouse == warehouse)
+	if whs is not None:
+		pi_query = pi_query.where(pii.warehouse.isin(whs))
 	pi_rows = pi_query.run(as_dict=True)
 	for r in pi_rows:
 		r["doctype"] = "Purchase Invoice"
@@ -1160,8 +1192,8 @@ def _get_purchase_rows(item, company, from_date, to_date, warehouse):
 		pr_query = pr_query.where(pr.posting_date >= from_date)
 	if to_date:
 		pr_query = pr_query.where(pr.posting_date <= to_date)
-	if warehouse:
-		pr_query = pr_query.where(pri.warehouse == warehouse)
+	if whs is not None:
+		pr_query = pr_query.where(pri.warehouse.isin(whs))
 	pr_rows = pr_query.run(as_dict=True)
 	for r in pr_rows:
 		r["doctype"] = "Purchase Receipt"
@@ -1200,8 +1232,11 @@ def _get_open_purchase_orders(item, company, warehouse=None):
 		.where(poi.qty > poi.received_qty)
 		.orderby(po.transaction_date, order=frappe.qb.desc)
 	)
-	if warehouse:
-		query = query.where(poi.warehouse == warehouse)
+	whs = _warehouse_filter(company, warehouse)
+	if whs == []:
+		return []
+	if whs is not None:
+		query = query.where(poi.warehouse.isin(whs))
 
 	rows = query.run(as_dict=True)
 	for r in rows:
@@ -1238,8 +1273,11 @@ def _get_open_sales_orders(item, company, warehouse=None):
 		.where(soi.qty > soi.delivered_qty)
 		.orderby(so.transaction_date, order=frappe.qb.desc)
 	)
-	if warehouse:
-		query = query.where(soi.warehouse == warehouse)
+	whs = _warehouse_filter(company, warehouse)
+	if whs == []:
+		return []
+	if whs is not None:
+		query = query.where(soi.warehouse.isin(whs))
 
 	rows = query.run(as_dict=True)
 	for r in rows:
@@ -1281,8 +1319,11 @@ def _get_sales_rows(item, company, from_date, to_date, warehouse):
 		query = query.where(si.posting_date >= from_date)
 	if to_date:
 		query = query.where(si.posting_date <= to_date)
-	if warehouse:
-		query = query.where(sii.warehouse == warehouse)
+	whs = _warehouse_filter(company, warehouse)
+	if whs == []:
+		return []
+	if whs is not None:
+		query = query.where(sii.warehouse.isin(whs))
 
 	rows = query.run(as_dict=True)
 	for r in rows:
