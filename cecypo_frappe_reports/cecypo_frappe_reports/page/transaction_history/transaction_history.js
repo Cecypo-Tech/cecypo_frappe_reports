@@ -878,7 +878,7 @@ class TransactionHistoryPage {
 		const th = (label, align) =>
 			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
 
-		const show_rate = rows.some(r => rate_key in r);
+		const show_rate = !is_purchase || (rows.length ? rows.some(r => rate_key in r) : this._item_panel.can_see_cost !== false);
 		const empty_row = `<tr><td colspan="${show_rate ? 8 : 7}" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
 
 		const body = rows.length ? rows.map((r, i) => `
@@ -2515,7 +2515,7 @@ class TransactionHistoryPage {
 		this._render_pricing_tab(history, prices || [], price_list_filter, $panel, item_code);
 	}
 
-	_render_pricing_tab({ purchases, sales }, prices, price_list_filter, $container, item_code) {
+	_render_pricing_tab({ purchases, sales, can_see_cost }, prices, price_list_filter, $container, item_code) {
 		const bc = this.base_currency;
 
 		const can_edit = frappe.model.can_write("Item Price");
@@ -2523,7 +2523,9 @@ class TransactionHistoryPage {
 		const avg_val_rate = costed.length
 			? costed.reduce((s, r) => s + r.valuation_rate, 0) / costed.length
 			: null;
-		const show_val = purchases.some(r => "valuation_rate" in r);
+		const show_val = purchases.length
+			? purchases.some(r => "valuation_rate" in r)
+			: (can_see_cost ?? this._item_panel.can_see_cost) !== false;
 
 		const price_panel_html = `
 			<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:16px">
