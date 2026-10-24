@@ -7,6 +7,7 @@ const _ICONS = {
 	// Replaces the former separate print and email icons: both routes now live inside the
 	// statement dialog, which also offers the branded Statement of Accounts.
 	statement: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>`,
+	export: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
 	info:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
 };
 
@@ -463,12 +464,13 @@ class TransactionHistoryPage {
 		dialog._rows = {}; // item_code → last search row, for item_name on tick
 		dialog.$wrapper.addClass("th-picker-dialog");
 
-		const $body = $(dialog.fields_dict.picker.wrapper).html(`
+		const $body = $(dialog.fields_dict.picker.wrapper).addClass("th-export-scope").html(`
 			<div class="th-picker-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
 				<div class="th-picker-search" style="flex:2;min-width:220px">
 					<input type="search" class="form-control" placeholder="${__("Search item code or name (min. 2 characters)")}">
 				</div>
 				<div class="th-picker-group" style="flex:1;min-width:180px"></div>
+				<div style="flex:0 0 auto;align-self:center">${this._export_btn(__("Items"))}</div>
 			</div>
 			<div class="th-picker-results" style="overflow-x:auto;max-height:60vh;overflow-y:auto"></div>
 			<div class="th-picker-note text-muted" style="font-size:12px;margin-top:6px"></div>
@@ -487,6 +489,7 @@ class TransactionHistoryPage {
 
 		const debounced = frappe.utils.debounce(() => this._picker_search(dialog), 300);
 		$body.on("input", ".th-picker-search input", debounced);
+		$body.on("click", ".btn-export-table", (e) => this._export_table($(e.currentTarget)));
 
 		$body.on("change", ".th-pick", (e) => {
 			const code = $(e.currentTarget).attr("data-item");
@@ -784,13 +787,66 @@ class TransactionHistoryPage {
 		).join("");
 		$container.append(`
 			${data.truncated ? `<div class="alert alert-warning">${__("Showing the first {0} entries; totals are incomplete. Narrow the date range.", [5000])}</div>` : ""}
+			<div class="th-export-scope">
+			<div style="display:flex;justify-content:flex-end;margin-bottom:4px">${this._export_btn(__("Stock Card {0}", [this._item_panel.active || ""]))}</div>
 			<div class="th-card-wrap" style="overflow-x:auto">
 				<table class="th-card-table" style="width:100%;font-size:12px;border-collapse:separate;border-spacing:0">
 					<thead><tr>${thead}</tr></thead>
 					<tbody>${rows.join("")}</tbody>
 					<tfoot>${foot}</tfoot>
 				</table>
+			</div>
 			</div>`);
+	}
+
+	// ── Export: one table, as rendered ────────────────────────────────────────
+
+	_export_btn(title) {
+		return `<button type="button" class="th-action-btn btn-export-table" data-title="${frappe.utils.escape_html(title)}" title="${__("Export to Excel")}">${_ICONS.export}</button>`;
+	}
+
+	/** Rows of a rendered table: visible rows only, checkbox columns dropped, number-looking
+	 *  text (with or without a currency prefix) as numbers. A nested detail table is flattened
+	 *  under its parent row, indented by one blank cell. */
+	_table_rows($table) {
+		const text = (el) => $(el).text().replace(/[↕↑↓▲▼▶]/g, "").replace(/\s+/g, " ").trim(); // drop sort/expand glyphs
+		const num = (t) => {
+			// "1,234.5", "40", "-3.5", "KSh 1,234.50", "$1,234", "-KSh 50.00" → number.
+			// "SINV-4687", "F071", "00123", "+254…", dates, "12.5%" and "Tile 600" stay text: a
+			// currency prefix only counts when the amount is grouped or has two decimals.
+			const m = t.match(/^(-?)(?:([A-Za-z]{1,4})\s|([$€£¥₹])\s?)?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?$/);
+			if (!m) return t;
+			const [, sign, code, sym, int, dec = ""] = m;
+			if ((code || sym) && !int.includes(",") && dec.length !== 3) return t;
+			if (int.length > 1 && int[0] === "0") return t;
+			return parseFloat(sign + int.replace(/,/g, "") + dec);
+		};
+		const out = [];
+		$table.children("thead, tbody, tfoot").children("tr").each((_, tr) => {
+			const $tr = $(tr);
+			if ($tr.hasClass("hidden") || $tr.css("display") === "none") return;
+			const $inner = $tr.find("table").first();
+			if ($inner.length) {
+				this._table_rows($inner).forEach(r => out.push(["", ...r]));
+				return;
+			}
+			const $cells = $tr.children("th, td");
+			if ($cells.length === 1 && ($cells.attr("colspan") || 1) > 1) return; // "No rows found" / "Loading…" placeholders
+			const cells = $cells.toArray().filter(c => !$(c).find("input[type=checkbox]").length);
+			out.push(cells.map(c => num(text(c))));
+		});
+		return out;
+	}
+
+	_export_table($btn) {
+		const $table = $btn.closest(".th-export-scope").find("table").first();
+		const rows = $table.length ? this._table_rows($table) : [];
+		if (rows.length < 2) { frappe.show_alert({ message: __("Nothing to export"), indicator: "orange" }); return; }
+		open_url_post(frappe.request.url, {
+			cmd: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.export_table",
+			title: $btn.attr("data-title") || "table",
+			rows: JSON.stringify(rows),
+		});
 	}
 
 	_render_item_nav() {
@@ -909,10 +965,11 @@ class TransactionHistoryPage {
 			</tr>`).join("") : empty_row;
 
 		$(`
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+			<div class="th-export-scope" style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
 				<div class="item-section-header" style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid ${accent};cursor:pointer;user-select:none">
 					<span style="color:${accent}">${label}</span>
 					<div style="display:flex;align-items:center;gap:8px">
+						${this._export_btn(label)}
 						<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("Total Qty: {0}", [format_number(total_qty, null, 2)])}</span>
 						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
 					</div>
@@ -967,10 +1024,11 @@ class TransactionHistoryPage {
 			</tr>`).join("") : empty_row;
 
 		$(`
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+			<div class="th-export-scope" style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
 				<div class="item-section-header" style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid ${accent};cursor:pointer;user-select:none">
 					<span style="color:${accent}">${label}</span>
 					<div style="display:flex;align-items:center;gap:8px">
+						${this._export_btn(label)}
 						<span style="font-weight:400;font-size:12px;color:var(--text-muted)">${__("{0} open", [rows.length])}</span>
 						<span class="section-chevron" style="color:var(--text-muted);font-size:11px">▼</span>
 					</div>
@@ -1088,9 +1146,11 @@ class TransactionHistoryPage {
 			</th>`;
 
 		return `
+			<div class="th-export-scope">
 			<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
 				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
 					placeholder="${__("Filter rows...")}" style="max-width:240px">
+				${this._export_btn(__("{0} History {1}", [party_type === "customer" ? __("Customer") : __("Supplier"), party || ""]))}
 				<button class="btn-copy-selected-items" data-party-type="${party_type}" disabled
 					title="${__("Copy selected item names and prices to clipboard")}"
 					style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--border-color);border-radius:4px;background:transparent;cursor:not-allowed;color:var(--text-muted);opacity:.4;font-size:11px;flex-shrink:0">
@@ -1153,6 +1213,7 @@ class TransactionHistoryPage {
 					}).join("")}
 				</tbody>
 			</table>
+			</div>
 			</div>`;
 	}
 
@@ -1160,6 +1221,13 @@ class TransactionHistoryPage {
 
 	_bind_tabs() {
 		const m = this.page.main;
+
+		// Bound first so stopImmediatePropagation beats the section-header collapse toggle below.
+		$(m).on("click", ".btn-export-table", (e) => {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			this._export_table($(e.currentTarget));
+		});
 
 		// Bootstrap nav-tabs switching
 		$(m).on("click", ".nav-link[data-tab]", (e) => {
@@ -1864,10 +1932,11 @@ class TransactionHistoryPage {
 				${label}${sort_icon(key)}
 			</th>`;
 
-		$content.html(`
-			<div style="margin-bottom:8px">
+		$content.addClass("th-export-scope").html(`
+			<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
 				<input type="search" class="recv-search form-control form-control-sm"
 					placeholder="${__("Filter customers...")}" style="max-width:280px">
+				${this._export_btn(__("Receivables"))}
 			</div>
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" class="recv-summary-table">
@@ -2378,10 +2447,11 @@ class TransactionHistoryPage {
 				${label}${sort_icon(key)}
 			</th>`;
 
-		$content.html(`
-			<div style="margin-bottom:8px">
+		$content.addClass("th-export-scope").html(`
+			<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
 				<input type="search" class="pay-search form-control form-control-sm"
 					placeholder="${__("Filter suppliers...")}" style="max-width:280px">
+				${this._export_btn(__("Payables"))}
 			</div>
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" class="pay-summary-table">
@@ -2543,8 +2613,8 @@ class TransactionHistoryPage {
 			: (can_see_cost ?? this._item_panel.can_see_cost) !== false;
 
 		const price_panel_html = `
-			<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:16px">
-				<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px">${__("Price List Rates")}</div>
+			<div class="th-export-scope" style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:16px">
+				<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Price List Rates")}</span>${this._export_btn(__("Price List Rates {0}", [item_code]))}</div>
 				${prices.length ? `
 				<div style="overflow-x:auto">
 				<table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -2641,8 +2711,8 @@ class TransactionHistoryPage {
 		const sell_th = (lbl, align) => `<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid var(--blue);white-space:nowrap;color:var(--text-muted);font-weight:600">${lbl}</th>`;
 
 		$(`
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;border-bottom:2px solid var(--green);color:var(--green)">${__("Purchases")}</div>
+			<div class="th-export-scope" style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;border-bottom:2px solid var(--green);color:var(--green);display:flex;justify-content:space-between;align-items:center">${__("Purchases")}${this._export_btn(__("Purchases {0}", [item_code]))}</div>
 				<div style="overflow:auto;max-height:340px">
 				<table style="width:100%;border-collapse:collapse;font-size:12px">
 					<thead><tr style="background:var(--subtle-fg)">
@@ -2667,8 +2737,8 @@ class TransactionHistoryPage {
 		`).appendTo($grid);
 
 		$(`
-			<div style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
-				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;border-bottom:2px solid var(--blue);color:var(--blue)">${__("Sales")}${price_list_filter ? ` — ${price_list_filter}` : ""}</div>
+			<div class="th-export-scope" style="border:1px solid var(--border-color);border-radius:6px;overflow:hidden">
+				<div style="background:var(--subtle-fg);padding:8px 12px;font-weight:600;border-bottom:2px solid var(--blue);color:var(--blue);display:flex;justify-content:space-between;align-items:center"><span>${__("Sales")}${price_list_filter ? ` — ${price_list_filter}` : ""}</span>${this._export_btn(__("Sales {0}", [item_code]))}</div>
 				<div style="overflow:auto;max-height:340px">
 				<table class="pricing-sales-table" style="width:100%;border-collapse:collapse;font-size:12px">
 					<thead><tr style="background:var(--subtle-fg)">
