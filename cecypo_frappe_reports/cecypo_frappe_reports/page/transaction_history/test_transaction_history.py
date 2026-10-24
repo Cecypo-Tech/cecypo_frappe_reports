@@ -5,6 +5,10 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
 
+from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+	search_items,
+)
+
 
 class TestTransactionHistoryPage(IntegrationTestCase):
 	def setUp(self):
@@ -875,3 +879,66 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		po.submit()
 		d = get_item_history(item="_Test Item", company="_Test Company")
 		self.assertIn(po.name, [r["voucher_no"] for r in d["open_po"]])
+
+	def _child_group_item(self):
+		"""An Item Group under _Test Item Group and one item in it; returns item code."""
+		if not frappe.db.exists("Item Group", "_TH Child Group"):
+			frappe.get_doc({
+				"doctype": "Item Group", "item_group_name": "_TH Child Group",
+				"parent_item_group": "_Test Item Group",
+			}).insert(ignore_permissions=True)
+		if not frappe.db.exists("Item", "_TH Child Item"):
+			frappe.get_doc({
+				"doctype": "Item", "item_code": "_TH Child Item", "item_name": "TH Child Item",
+				"item_group": "_TH Child Group", "stock_uom": "Nos", "is_stock_item": 1,
+			}).insert(ignore_permissions=True)
+		return "_TH Child Item"
+
+	def test_search_items_includes_descendant_groups(self):
+		code = self._child_group_item()
+		res = search_items(company="_Test Company", item_group="_Test Item Group")
+		self.assertIn(code, [i["item_code"] for i in res["items"]])
+
+	def test_search_items_empty_without_text_or_group(self):
+		self.assertEqual(search_items(company="_Test Company", txt=" ")["items"], [])
+
+	def test_search_items_stock_price_and_cost_shape(self):
+		wh = "_Test Warehouse - _TC"
+		before = frappe.db.get_value("Bin", {"item_code": "_Test Item", "warehouse": wh}, "actual_qty") or 0
+		self._receipt(qty=10, rate=100, warehouse=wh)
+		pl = frappe.db.get_single_value("Selling Settings", "selling_price_list")
+		frappe.db.delete("Item Price", {"item_code": "_Test Item", "price_list": pl})
+		frappe.get_doc({
+			"doctype": "Item Price", "item_code": "_Test Item", "price_list": pl,
+			"price_list_rate": 250, "selling": 1,
+		}).insert(ignore_permissions=True)
+		frappe.get_doc({
+			"doctype": "Item Price", "item_code": "_Test Item", "price_list": pl,
+			"price_list_rate": 999, "selling": 1, "valid_from": "2020-01-01", "valid_upto": "2020-12-31",
+		}).insert(ignore_permissions=True)
+		res = search_items(company="_Test Company", txt="_Test Item")
+		row = next(i for i in res["items"] if i["item_code"] == "_Test Item")
+		self.assertEqual(row["sell_price"], 250)
+		self.assertEqual(row["stock"][wh], flt(before + 10, 2))
+		self.assertIn(wh, res["warehouses"])
+		bins = frappe.get_all(
+			"Bin", {"item_code": "_Test Item", "warehouse": ["in", list(row["stock"])]},
+			["actual_qty", "stock_value"],
+		)
+		qty = sum(b.actual_qty for b in bins)
+		self.assertEqual(row["total_qty"], flt(qty, 2))
+		self.assertTrue(res["can_see_cost"])
+		self.assertEqual(row["cost"], flt(sum(b.stock_value for b in bins) / qty, 2))
+		frappe.set_user(self._as_sales_only_user())
+		try:
+			res = search_items(company="_Test Company", txt="_Test Item")
+			row = next(i for i in res["items"] if i["item_code"] == "_Test Item")
+			self.assertFalse(res["can_see_cost"])
+			self.assertNotIn("cost", row)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_search_items_caps_and_flags_truncation(self):
+		res = search_items(company="_Test Company", txt="_Test", limit="2")
+		self.assertEqual(len(res["items"]), 2)
+		self.assertTrue(res["truncated"])

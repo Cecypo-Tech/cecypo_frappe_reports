@@ -478,6 +478,76 @@ def get_warehouse_stock(item_code, company):
 
 
 @frappe.whitelist()
+def search_items(company, txt="", item_group=None, limit=100):
+	"""Item picker data: matching items with sell price, stock per permitted warehouse and (if allowed) cost."""
+	from cecypo_frappe_reports.cecypo_frappe_reports.api import item_query
+	from frappe.utils.nestedset import get_descendants_of
+
+	txt = (txt or "").strip()
+	limit = cint(limit) or 100
+	out = {"can_see_cost": _can_see_cost(), "warehouses": [], "truncated": False, "items": []}
+	if len(txt) < 2 and not item_group:
+		return out
+
+	filters = {}
+	if item_group:
+		filters["item_group"] = ["in", [item_group, *get_descendants_of("Item Group", item_group)]]
+	found = item_query(
+		doctype="Item", txt=txt, searchfield="name", start=0, page_len=limit + 1,
+		filters=filters, as_dict=True,
+	)
+	out["truncated"] = len(found) > limit
+	codes = [r["name"] for r in found[:limit]]
+	if not codes:
+		return out
+
+	meta = {d.name: d for d in frappe.get_all(
+		"Item", {"name": ["in", codes]}, ["name", "item_name", "item_group", "stock_uom"])}
+
+	stock, value = {}, {}
+	permitted = _permitted_warehouses(company)
+	if permitted:
+		for b in frappe.get_all(
+			"Bin", {"item_code": ["in", codes], "warehouse": ["in", permitted]},
+			["item_code", "warehouse", "actual_qty", "stock_value"],
+		):
+			stock.setdefault(b.item_code, {})[b.warehouse] = flt(b.actual_qty, 2)
+			value[b.item_code] = value.get(b.item_code, 0) + flt(b.stock_value)
+
+	prices, today = {}, getdate()
+	price_list = frappe.db.get_single_value("Selling Settings", "selling_price_list")
+	for pr in frappe.get_all(
+		"Item Price", {"item_code": ["in", codes], "price_list": price_list},
+		["item_code", "price_list_rate", "valid_from", "valid_upto"],
+	):
+		if (pr.valid_from and getdate(pr.valid_from) > today) or (pr.valid_upto and getdate(pr.valid_upto) < today):
+			continue
+		start = getdate(pr.valid_from) if pr.valid_from else getdate("1900-01-01")
+		if pr.item_code not in prices or start > prices[pr.item_code][0]:
+			prices[pr.item_code] = (start, flt(pr.price_list_rate, 2))
+
+	wh_qty = {}
+	for code in codes:
+		m = meta.get(code)
+		if not m:
+			continue
+		by_wh = {w: q for w, q in stock.get(code, {}).items() if q}
+		total = flt(sum(by_wh.values()), 2)
+		for w, q in by_wh.items():
+			wh_qty[w] = wh_qty.get(w, 0) + q
+		out["items"].append({
+			"item_code": code, "item_name": m.item_name, "item_group": m.item_group,
+			"stock_uom": m.stock_uom,
+			"sell_price": prices[code][1] if code in prices else None,
+			"stock": by_wh, "total_qty": total,
+			"cost": flt(value.get(code, 0) / total, 2) if total else None,
+		})
+	_strip_cost(out["items"])
+	out["warehouses"] = sorted(wh_qty, key=lambda w: -wh_qty[w])
+	return out
+
+
+@frappe.whitelist()
 def get_party_details(party_type, party, company=None, as_of_date=None, show_future_payments=0):
 	"""Return full profile: contacts, address, account stats, and unallocated advances.
 
