@@ -38,8 +38,12 @@ class TransactionHistoryPage {
 		this._pay_state = { rows: [], company: null, as_of_date: null, sort_key: "outstanding", sort_dir: "desc" };
 		this._supp_source = "pi";
 		this._item_panel = {
-			items: [],      // [{item_code, item_name, checked: true}]
-			active_tab: null,
+			items: [],          // [{item_code, item_name}]
+			active: null,       // item_code shown in .item-content
+			view: "history",    // "history" | "card"
+			can_see_cost: true, // from get_item_history
+			history: {},        // item_code → get_item_history payload
+			card: {},           // item_code → stock card payload (Task 6)
 		};
 		this._pricing_panel = {
 			items: [],
@@ -47,7 +51,6 @@ class TransactionHistoryPage {
 		};
 		this._render();
 		this._bind_tabs();
-		this._render_item_checklist();
 		this._render_pricing_checklist();
 		this._read_url_params();
 	}
@@ -60,13 +63,14 @@ class TransactionHistoryPage {
 		style.id = "th-responsive-styles";
 		style.textContent = `
 			@media (max-width: 767px) {
-				.item-body { flex-direction: column !important; }
-				.item-panel-sidebar {
-					width: 100% !important;
-					min-width: 0 !important;
-					margin-right: 0 !important;
-					margin-bottom: 12px;
-				}
+				.item-chips, .item-nav, .th-view-switch { flex-wrap: wrap !important; }
+				.item-select { width: 100% !important; max-width: none !important; }
+				.item-results-search { max-width: none !important; flex: 1 1 100% !important; }
+				.item-chip, .item-prev, .item-next, .th-view-switch .btn { min-height: 32px; }
+				.th-picker-bar { flex-direction: column !important; }
+				.th-picker-bar > div { min-width: 0 !important; width: 100% !important; }
+				.th-picker-dialog .modal-dialog { margin: 0 !important; max-width: none !important; width: 100% !important; }
+				.th-picker-dialog .modal-content { min-height: 100vh; border-radius: 0 !important; }
 				.item-results-grid { grid-template-columns: 1fr !important; }
 				.pricing-body { flex-direction: column !important; }
 				.pricing-panel-sidebar {
@@ -123,6 +127,30 @@ class TransactionHistoryPage {
 			.th-party-info-btn.is-amber { color: var(--orange-500, #f97316); }
 			.th-party-info-btn.is-red { color: var(--red-500); }
 			.th-btn-wrap { display: flex; align-items: flex-end; padding-bottom: 1px; }
+			.item-chip {
+				display: inline-flex; align-items: center; gap: 6px;
+				padding: 2px 4px 2px 10px; border: 1px solid var(--border-color); border-radius: 12px;
+				font-size: 12px; cursor: pointer; background: var(--control-bg);
+			}
+			.item-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+			.item-chip-x { color: inherit; opacity: .6; padding: 0 4px; text-decoration: none !important; }
+			.item-chip-x:hover { opacity: 1; }
+			.th-picker-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+			.th-picker-table th, .th-picker-table td {
+				padding: 4px 8px; border-bottom: 1px solid var(--border-color); white-space: nowrap; background: var(--fg-color);
+			}
+			.th-picker-table th { color: var(--text-muted); font-weight: 600; position: sticky; top: 0; z-index: 2; }
+			.th-pick-sticky { position: sticky; left: 0; z-index: 1; }
+			.th-picker-table th.th-pick-sticky { z-index: 3; }
+			.th-pick-sticky.th-pick-box { width: 32px; min-width: 32px; max-width: 32px; }
+			.th-pick-sticky.th-pick-code { left: 32px; }
+			.th-card-table th, .th-card-table td.th-card-sticky { background: var(--fg-color); }
+			.th-card-sticky { position: sticky; z-index: 1; }
+			.th-card-table th.th-card-sticky { z-index: 3; }
+			.th-card-date { left: 0; min-width: 92px; }
+			.th-card-voucher { left: 92px; }
+			.th-pick-wh { cursor: pointer; }
+			.th-pick-wh:hover { text-decoration: underline; color: var(--primary); }
 		`;
 		document.head.appendChild(style);
 	}
@@ -158,28 +186,23 @@ class TransactionHistoryPage {
 						<div class="ctrl-item-from" style="min-width:120px"></div>
 						<div class="ctrl-item-to" style="min-width:120px"></div>
 						<div class="ctrl-item-warehouse" style="min-width:160px"></div>
-					</div>
-					<div class="item-body" style="display:flex;gap:0;align-items:flex-start">
-						<div class="item-panel-sidebar" style="width:224px;min-width:224px;border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-right:14px;flex-shrink:0;position:relative;z-index:1">
-							<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-								<span class="item-panel-label" style="font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">${__("Items")}</span>
-								<button class="btn btn-xs btn-default btn-toggle-item-panel" title="${__("Toggle panel")}" style="padding:1px 6px">☰</button>
-							</div>
-							<div class="item-panel-body">
-								<div class="ctrl-item-group" style="margin-bottom:6px"></div>
-								<div class="ctrl-item-add" style="margin-bottom:8px"></div>
-								<div class="item-checklist" style="max-height:45vh;overflow-y:auto;margin-bottom:8px;border-top:1px solid var(--border-color);padding-top:6px"></div>
-								<div style="display:flex;gap:4px">
-									<button class="btn btn-primary btn-sm btn-run-items" style="flex:1" disabled>${__("Run (0)")}</button>
-									<button class="btn btn-default btn-sm btn-clear-items" title="${__("Clear all")}" style="padding:4px 8px">✕</button>
-								</div>
+						<div class="th-btn-wrap"><button class="btn btn-primary btn-sm btn-pick-items">${__("Select Items…")}</button></div>
+						<div class="th-btn-wrap">
+							<div class="btn-group th-view-switch" role="group">
+								<button class="btn btn-sm btn-default active" data-view="history">${__("History")}</button>
+								<button class="btn btn-sm btn-default" data-view="card">${__("Stock Card")}</button>
 							</div>
 						</div>
-						<div class="item-results" style="flex:1;min-width:0">
-							<div class="item-tabs-strip"></div>
-							<div class="th-content item-content"></div>
-						</div>
 					</div>
+					<div class="item-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+					<div class="item-nav hidden" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+						<select class="form-control form-control-sm item-select" style="width:auto;max-width:320px"></select>
+						<button class="btn btn-sm btn-default item-prev" title="${__("Previous item")}">‹</button>
+						<button class="btn btn-sm btn-default item-next" title="${__("Next item")}">›</button>
+						<input type="search" class="item-results-search form-control form-control-sm"
+							placeholder="${__("Filter rows...")}" style="max-width:280px">
+					</div>
+					<div class="th-content item-content">${this._item_empty_html()}</div>
 				</div>
 
 				<div class="th-panel hidden" data-panel="customer">
@@ -267,33 +290,24 @@ class TransactionHistoryPage {
 		const make = (parent, df) =>
 			frappe.ui.form.make_control({ parent: $(m).find(parent)[0], df, render_input: true });
 
-		// Item tab
+		// Item tab. Any filter change re-runs the selected items; debounced so a burst of
+		// change events (and the picker's warehouse-cell click) yields exactly one fetch.
+		const rerun = () => {
+			clearTimeout(this._rerun_timer);
+			this._rerun_timer = setTimeout(() => {
+				if (this._item_panel.items.length) this._run_item_history();
+			}, 150);
+		};
+		this._rerun_item_history = rerun;
 		this.controls.item_company = make(".ctrl-item-company", {
-			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1,
+			fieldtype: "Link", options: "Company", fieldname: "company", label: __("Company"), reqd: 1, change: rerun,
 		});
-		this.controls.item_from = make(".ctrl-item-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date") });
-		this.controls.item_to = make(".ctrl-item-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date") });
+		this.controls.item_from = make(".ctrl-item-from", { fieldtype: "Date", fieldname: "from_date", label: __("From Date"), change: rerun });
+		this.controls.item_to = make(".ctrl-item-to", { fieldtype: "Date", fieldname: "to_date", label: __("To Date"), change: rerun });
 		this.controls.item_warehouse = make(".ctrl-item-warehouse", {
-			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"),
+			fieldtype: "Link", options: "Warehouse", fieldname: "warehouse", label: __("Warehouse"), change: rerun,
 		});
 		if (default_company) this.controls.item_company.set_value(default_company);
-
-		// Item panel — group filter
-		this.controls.item_group = make(".ctrl-item-group", {
-			fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
-		});
-
-		// Item panel — search-and-add (get_query filters by selected group, if any)
-		this.controls.item_add = make(".ctrl-item-add", {
-			fieldtype: "Link", options: "Item", fieldname: "item_add", label: __("Add Item"),
-		});
-		this.controls.item_add.get_query = () => {
-			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
-			return {
-				query: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
-				filters: group ? { item_group: group } : {},
-			};
-		};
 
 		// Customer tab
 		this.controls.customer = make(".ctrl-cust-customer", {
@@ -388,37 +402,7 @@ class TransactionHistoryPage {
 		if (default_company) this.controls.pricing_company.set_value(default_company);
 	}
 
-	// ── Item Checklist ────────────────────────────────────────────────────────
-
-	_render_item_checklist() {
-		const m = this.page.main;
-		const $list = $(m).find(".item-checklist");
-		const items = this._item_panel.items;
-
-		if (!items.length) {
-			$list.html(`<span class="text-muted" style="font-size:12px">${__("No items added yet")}</span>`);
-		} else {
-			$list.html(items.map((item, i) => `
-				<div class="item-check-row" style="display:flex;align-items:center;padding:3px 0;border-bottom:1px solid var(--border-color)">
-					<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;flex:1;min-width:0;overflow:hidden">
-						<input type="checkbox" class="item-checkbox" data-idx="${i}" ${item.checked ? "checked" : ""} style="flex-shrink:0">
-						<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.item_name || item.item_code}">${item.item_name || item.item_code}</span>
-					</label>
-					<button class="btn-remove-item" data-idx="${i}"
-						style="border:none;background:none;cursor:pointer;color:var(--text-muted);padding:0 4px;font-size:14px;line-height:1;flex-shrink:0">×</button>
-				</div>
-			`).join(""));
-		}
-
-		const checked = items.filter(it => it.checked).length;
-		$(m).find(".btn-run-items").text(__("Run ({0})", [checked])).prop("disabled", checked === 0);
-	}
-
-	_add_item_to_panel(item_code, item_name) {
-		if (this._item_panel.items.find(it => it.item_code === item_code)) return; // already present
-		this._item_panel.items.push({ item_code, item_name: item_name || item_code, checked: true });
-		this._render_item_checklist();
-	}
+	// ── Pricing Checklist ─────────────────────────────────────────────────────
 
 	_render_pricing_checklist() {
 		const m = this.page.main;
@@ -450,15 +434,197 @@ class TransactionHistoryPage {
 		this._render_pricing_checklist();
 	}
 
-	// ── Item History ─────────────────────────────────────────────────────────
+	// ── Item picker ──────────────────────────────────────────────────────────
 
-	_run_item_history() {
-		const m = this.page.main;
+	_open_item_picker() {
 		const company = this.controls.item_company.get_value();
 		if (!company) { frappe.msgprint(__("Company is required")); return; }
 
-		const checked = this._item_panel.items.filter(it => it.checked);
-		if (!checked.length) return;
+		const dialog = new frappe.ui.Dialog({
+			title: __("Select Items"),
+			size: "extra-large",
+			fields: [{ fieldtype: "HTML", fieldname: "picker" }],
+			primary_action_label: __("Use selected ({0})", [0]),
+			primary_action: () => {
+				if (!dialog._sel.size) return;
+				this._item_panel.items = [...dialog._sel.values()];
+				dialog.hide();
+				this._run_item_history();
+			},
+			secondary_action_label: __("Clear"),
+			secondary_action: () => {
+				dialog._sel.clear();
+				this._picker_sync(dialog);
+			},
+			on_hide: () => dialog.$wrapper.remove(),
+		});
+		// Selection survives searches; pre-seeded with what is already in the navigator.
+		dialog._sel = new Map(this._item_panel.items.map(it => [it.item_code, { ...it }]));
+		dialog._rows = {}; // item_code → last search row, for item_name on tick
+		dialog.$wrapper.addClass("th-picker-dialog");
+
+		const $body = $(dialog.fields_dict.picker.wrapper).html(`
+			<div class="th-picker-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+				<div class="th-picker-search" style="flex:2;min-width:220px">
+					<input type="search" class="form-control" placeholder="${__("Search item code or name (min. 2 characters)")}">
+				</div>
+				<div class="th-picker-group" style="flex:1;min-width:180px"></div>
+			</div>
+			<div class="th-picker-results" style="overflow-x:auto;max-height:60vh;overflow-y:auto"></div>
+			<div class="th-picker-note text-muted" style="font-size:12px;margin-top:6px"></div>
+			<div class="th-pick-count text-muted" style="font-size:12px;margin-top:4px"></div>
+		`);
+		dialog._group = frappe.ui.form.make_control({
+			parent: $body.find(".th-picker-group")[0],
+			df: {
+				fieldtype: "Link", options: "Item Group", fieldname: "item_group", label: __("Item Group"),
+				change: () => this._picker_search(dialog),
+			},
+			render_input: true,
+		});
+		// The Link control sits in a frappe-control wrapper with bottom margin; drop it so both line up.
+		$body.find(".th-picker-group .frappe-control").css("margin-bottom", 0);
+
+		const debounced = frappe.utils.debounce(() => this._picker_search(dialog), 300);
+		$body.on("input", ".th-picker-search input", debounced);
+
+		$body.on("change", ".th-pick", (e) => {
+			const code = $(e.currentTarget).attr("data-item");
+			if (e.currentTarget.checked) {
+				const row = dialog._rows[code] || {};
+				dialog._sel.set(code, { item_code: code, item_name: row.item_name || code });
+			} else {
+				dialog._sel.delete(code);
+			}
+			this._picker_sync(dialog);
+		});
+		$body.on("change", ".th-pick-all", (e) => {
+			const on = e.currentTarget.checked;
+			$body.find(".th-pick").each((_, el) => {
+				const code = $(el).attr("data-item");
+				if (on) dialog._sel.set(code, { item_code: code, item_name: (dialog._rows[code] || {}).item_name || code });
+				else dialog._sel.delete(code);
+			});
+			this._picker_sync(dialog);
+		});
+		// A warehouse qty cell opens that item's Stock Card for that warehouse.
+		$body.on("click", ".th-pick-wh", (e) => {
+			const code = $(e.currentTarget).attr("data-item");
+			const wh = $(e.currentTarget).attr("data-warehouse");
+			const p = this._item_panel;
+			dialog._sel.set(code, { item_code: code, item_name: (dialog._rows[code] || {}).item_name || code });
+			p.items = [...dialog._sel.values()];
+			p.active = code;
+			p.view = "card";
+			dialog.hide();
+			if (wh) this.controls.item_warehouse.set_value(wh);
+			this._rerun_item_history(); // debounced with the warehouse change event: one run
+		});
+
+		this._picker_search(dialog);
+		this._picker_sync(dialog);
+		dialog.show();
+	}
+
+	_picker_search(dialog) {
+		const $wrap = dialog.$wrapper.find(".th-picker-results");
+		const txt = (dialog.$wrapper.find(".th-picker-search input").val() || "").trim();
+		const group = dialog._group.get_value() || null;
+		dialog._gen = (dialog._gen || 0) + 1;
+		const gen = dialog._gen;
+
+		if (txt.length < 2 && !group) {
+			$wrap.html(`<div class="text-muted" style="padding:16px">${__("Type at least 2 characters or choose an Item Group")}</div>`);
+			dialog.$wrapper.find(".th-picker-note").empty();
+			return;
+		}
+		$wrap.html(`<div class="text-muted" style="padding:16px">${__("Loading...")}</div>`);
+		const fail = () => $wrap.html(`<div class="text-muted" style="padding:16px">${__("Could not search items.")}</div>`);
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.search_items",
+			args: { company: this.controls.item_company.get_value(), txt, item_group: group },
+			callback: (r) => {
+				if (gen !== dialog._gen) return; // superseded search
+				if (!r.message) return fail();
+				this._render_picker_table($wrap, r.message);
+				dialog._rows = {};
+				r.message.items.forEach(it => { dialog._rows[it.item_code] = it; });
+				dialog.$wrapper.find(".th-picker-note").text(
+					r.message.truncated ? __("Showing first {0} — refine your search", [100]) : ""
+				);
+				this._picker_sync(dialog);
+			},
+			error: () => {
+				if (gen === dialog._gen) fail();
+			},
+		});
+	}
+
+	_render_picker_table($wrap, data) {
+		const esc = frappe.utils.escape_html;
+		const bc = this.base_currency;
+		const mobile = window.innerWidth < 768;
+		const items = data.items || [];
+		if (!items.length) {
+			$wrap.html(`<div class="text-muted" style="padding:16px">${__("No items found")}</div>`);
+			return;
+		}
+		// One column per warehouse when few enough to fit; otherwise (or on phones) a single Stock column.
+		const whs = !mobile && data.warehouses.length <= 6 ? data.warehouses : null;
+		const qty = (v) => (v ? format_number(v, null, 2) : "—");
+		const wh_cell = (it, wh, v) =>
+			`<td class="th-pick-wh" data-item="${esc(it.item_code)}" data-warehouse="${esc(wh)}" title="${__("Open Stock Card")}" style="text-align:right">${qty(v)}</td>`;
+
+		$wrap.html(`
+			<table class="th-picker-table">
+				<thead><tr>
+					<th class="th-pick-sticky th-pick-box"><input type="checkbox" class="th-pick-all"></th>
+					<th class="th-pick-sticky th-pick-code">${__("Item Code")}</th>
+					<th>${__("Item Name")}</th>
+					${mobile ? "" : `<th>${__("Group")}</th>`}
+					<th>${__("UOM")}</th>
+					<th style="text-align:right">${__("Sell Price")}</th>
+					${whs ? whs.map(wh => `<th style="text-align:right">${esc(wh)}</th>`).join("") : `<th style="text-align:right">${__("Stock")}</th>`}
+					${data.can_see_cost ? `<th style="text-align:right">${__("Cost")}</th>` : ""}
+				</tr></thead>
+				<tbody>
+					${items.map(it => `<tr>
+						<td class="th-pick-sticky th-pick-box"><input type="checkbox" class="th-pick" data-item="${esc(it.item_code)}"></td>
+						<td class="th-pick-sticky th-pick-code">${esc(it.item_code)}</td>
+						<td>${esc(it.item_name)}</td>
+						${mobile ? "" : `<td>${esc(it.item_group)}</td>`}
+						<td>${esc(it.stock_uom)}</td>
+						<td style="text-align:right">${it.sell_price == null ? "—" : format_currency(it.sell_price, bc)}</td>
+						${whs ? whs.map(wh => wh_cell(it, wh, (it.stock || {})[wh])).join("") : wh_cell(it, "", it.total_qty)}
+						${data.can_see_cost ? `<td style="text-align:right">${it.cost == null ? "—" : format_currency(it.cost, bc)}</td>` : ""}
+					</tr>`).join("")}
+				</tbody>
+			</table>
+		`);
+	}
+
+	// Reflect dialog._sel in the checkboxes, header box, footer count and primary label.
+	_picker_sync(dialog) {
+		const sel = dialog._sel;
+		const $boxes = dialog.$wrapper.find(".th-pick");
+		$boxes.each((_, el) => { el.checked = sel.has($(el).attr("data-item")); });
+		dialog.$wrapper.find(".th-pick-all").prop("checked", $boxes.length > 0 && $boxes.filter(":checked").length === $boxes.length);
+		dialog.$wrapper.find(".th-pick-count").text(__("{0} selected", [sel.size]));
+		dialog.set_btn_label(dialog.get_primary_btn(), __("Use selected ({0})", [sel.size]));
+		sel.size ? dialog.enable_primary_action() : dialog.disable_primary_action();
+	}
+
+	// ── Item navigator ───────────────────────────────────────────────────────
+
+	_item_empty_html() {
+		return `<div class="text-muted" style="padding:20px">${__("Click \"Select Items…\" to choose the items to look at.")}</div>`;
+	}
+
+	_run_item_history() {
+		const company = this.controls.item_company.get_value();
+		if (!company) { frappe.msgprint(__("Company is required")); return; }
+		const p = this._item_panel;
+		if (!p.items.length) return;
 
 		const from_date = this.controls.item_from.get_value() || null;
 		const to_date = this.controls.item_to.get_value() || null;
@@ -468,71 +634,202 @@ class TransactionHistoryPage {
 		this._run_generation = (this._run_generation || 0) + 1;
 		const gen = this._run_generation;
 
-		// Disable Run button while in flight
-		$(m).find(".btn-run-items").prop("disabled", true);
-		let pending = checked.length;
+		p.history = {};
+		p.card = {};
+		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
 
-		// Reset results
-		this._item_panel.active_tab = checked[0].item_code;
-		this._render_item_tabs(checked);
-
-		// Fire parallel calls — one per checked item
-		checked.forEach(item => {
+		p.items.forEach(item => {
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
 				args: { item: item.item_code, company, from_date, to_date, warehouse },
 				callback: (r) => {
-					if (gen !== this._run_generation) return; // stale — discard
-					if (r.message) {
-						this._fill_item_tab(item.item_code, r.message);
-					}
-					if (--pending === 0) {
-						// Re-enable button only when all responses have arrived
-						const checked_count = this._item_panel.items.filter(it => it.checked).length;
-						$(m).find(".btn-run-items").prop("disabled", checked_count === 0);
+					if (gen !== this._run_generation || !r.message) return; // stale — discard
+					p.can_see_cost = r.message.can_see_cost !== false;
+					p.history[item.item_code] = r.message;
+					if (p.active === item.item_code && p.view === "history") this._show_item(item.item_code);
+				},
+				error: () => {
+					if (gen !== this._run_generation) return;
+					if (p.active === item.item_code && p.view === "history") {
+						$(this.page.main).find(".item-content").html(`<div class="text-muted" style="padding:20px">${__("Could not load item history.")}</div>`);
 					}
 				},
 			});
 		});
 	}
 
-	_render_item_tabs(items) {
-		const m = this.page.main;
-		const $strip = $(m).find(".item-tabs-strip");
-		const $content = $(m).find(".item-content");
+	_show_item(item_code) {
+		const p = this._item_panel;
+		const $content = $(this.page.main).find(".item-content");
+		p.active = item_code;
+		this._render_item_nav();
+		if (p.view === "card") { this._load_stock_card(item_code); return; }
 
-		$strip.html(`
-			<div style="margin-bottom:8px">
-				<ul class="nav nav-tabs" style="margin-bottom:0">
-					${items.map((item, i) => `
-						<li class="nav-item">
-							<a class="nav-link item-tab-link ${i === 0 ? "active" : ""}"
-								href="#" data-item="${item.item_code}"
-								style="font-size:12px;padding:6px 12px">
-								${item.item_code}
-							</a>
-						</li>
-					`).join("")}
-				</ul>
-			</div>
-			<div style="margin-bottom:10px">
-				<input type="search" class="item-results-search form-control form-control-sm"
-					placeholder="${__("Filter rows...")}" style="max-width:280px">
-			</div>
-		`);
-
-		$content.html(items.map((item, i) => `
-			<div class="item-tab-panel ${i === 0 ? "" : "hidden"}" data-item="${item.item_code}">
-				<div class="text-muted" style="padding:20px">${__("Loading...")}</div>
-			</div>
-		`).join(""));
+		const data = p.history[item_code];
+		$content.empty();
+		if (!data) {
+			$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
+			return;
+		}
+		this._render_item_history(data, $content);
+		$(this.page.main).find(".item-results-search").trigger("input"); // keep the active row filter
 	}
 
-	_fill_item_tab(item_code, data) {
+	// ── Stock card ───────────────────────────────────────────────────────────
+
+	_load_stock_card(item_code) {
+		const p = this._item_panel;
+		const $content = $(this.page.main).find(".item-content");
+		if (p.card[item_code]) { this._paint_stock_card(item_code); return; }
+		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
+		const gen = this._run_generation;
+		const cache = p.card;
+		const from_date = this.controls.item_from.get_value() || null;
+		const fail = () => {
+			if (p.active === item_code && p.view === "card") {
+				$content.html(`<div class="text-muted" style="padding:20px">${__("Could not load the stock card.")}</div>`);
+			}
+		};
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_stock_card",
+			args: {
+				item: item_code,
+				company: this.controls.item_company.get_value(),
+				from_date,
+				to_date: this.controls.item_to.get_value() || null,
+				warehouse: this.controls.item_warehouse.get_value() || null,
+			},
+			callback: (r) => {
+				if (gen !== this._run_generation || cache !== p.card) return; // stale
+				if (!r.message) return fail();
+				cache[item_code] = { data: r.message, from_date };
+				if (p.active === item_code && p.view === "card") this._paint_stock_card(item_code);
+			},
+			error: () => {
+				if (gen !== this._run_generation || cache !== p.card) return; // stale
+				fail();
+			},
+		});
+	}
+
+	_paint_stock_card(item_code) {
+		const p = this._item_panel;
+		const $content = $(this.page.main).find(".item-content");
+		const { data, from_date } = p.card[item_code];
+		const it = p.items.find(i => i.item_code === item_code) || { item_code, item_name: "" };
+		const esc = frappe.utils.escape_html;
+		$content.empty().append(`<div style="font-weight:600;margin-bottom:8px">${__("Stock Card")}: ${esc(it.item_code)} ${esc(it.item_name)}</div>`);
+		this._render_stock_card(data, $content, from_date);
+		$(this.page.main).find(".item-results-search").trigger("input"); // keep the active row filter
+	}
+
+	_render_stock_card(data, $container, from_date) {
+		const esc = frappe.utils.escape_html;
+		const bc = this.base_currency;
+		const cost = !!data.can_see_cost;
+		const multi = !data.single_warehouse;
+		const num = (v) => format_number(v, null, 2);
+		const td = (v, extra = "") => `<td style="padding:4px 8px;border-bottom:1px solid var(--border-color);white-space:nowrap;${extra}">${v}</td>`;
+		const right = "text-align:right;";
+		const heads = [["#", ""], [__("Date"), "th-card-sticky th-card-date"], [__("Voucher"), "th-card-sticky th-card-voucher"], [__("Party"), ""]];
+		if (multi) heads.push([__("Warehouse"), ""]);
+		heads.push([__("Rate"), "r"], [__("Qty In"), "r"], [__("Qty Out"), "r"], [__("Balance"), "r"]);
+		if (cost) heads.push([__("Cost Rate"), "r"], [__("Value Change"), "r"], [__("Stock Value"), "r"]);
+		const ncols = heads.length;
+		const stick = (cls) => `class="${cls}" style="padding:4px 8px;border-bottom:1px solid var(--border-color);white-space:nowrap;"`;
+
+		const rows = [];
+		const bg = (i) => (i % 2 ? "background:var(--control-bg);" : "");
+		let i = 0;
+		if (from_date) {
+			const blanks = (n) => td("").repeat(n);
+			rows.push(`<tr style="font-style:italic;${bg(i++)}">
+				${td("")}<td ${stick("th-card-sticky th-card-date")}>${esc(frappe.datetime.str_to_user(from_date))}</td>
+				<td ${stick("th-card-sticky th-card-voucher")}>${__("Opening")}</td>${td("")}${multi ? td("") : ""}${blanks(3)}
+				${td(`<b>${num(data.opening_qty)}</b>`, right)}
+				${cost ? td("") + td("") + td(data.opening_value != null ? format_currency(data.opening_value, bc) : "", right) : ""}
+			</tr>`);
+		}
+		(data.rows || []).forEach((r, n) => {
+			const b = bg(i++);
+			rows.push(`<tr style="${b}">
+				${td(n + 1)}
+				<td ${stick("th-card-sticky th-card-date")}>${esc(frappe.datetime.str_to_user(r.posting_date))}</td>
+				<td ${stick("th-card-sticky th-card-voucher")}><a href="/app/${esc(frappe.router.slug(r.voucher_type))}/${encodeURIComponent(r.voucher_no)}" target="_blank" rel="noopener">${esc(r.voucher_no)}</a></td>
+				${td(esc(r.party || ""))}
+				${multi ? td(esc(r.warehouse || "")) : ""}
+				${td(r.rate == null ? "—" : format_currency(r.rate, bc), right)}
+				${td(r.qty_in ? num(r.qty_in) : "", right)}
+				${td(r.qty_out ? num(r.qty_out) : "", right + "color:var(--red);")}
+				${td(`<b>${num(r.balance)}</b>`, right)}
+				${cost ? td(r.valuation_rate == null ? "—" : format_currency(r.valuation_rate, bc), right)
+					+ td(r.stock_value_difference == null ? "" : format_currency(r.stock_value_difference, bc), right)
+					+ td(r.value == null ? "" : format_currency(r.value, bc), right) : ""}
+			</tr>`);
+		});
+		if (!rows.length) {
+			rows.push(`<tr><td colspan="${ncols}" class="text-muted" style="padding:20px;text-align:center">${__("No stock movements")}</td></tr>`);
+		}
+		const last = (data.rows || [])[(data.rows || []).length - 1];
+		const closing_value = last ? last.value : data.opening_value;
+		const tf = "font-weight:600;border-top:2px solid var(--border-color);";
+		const foot = `<tr class="th-card-foot">
+			${td("", tf)}<td ${stick("th-card-sticky th-card-date")}><b>${__("Total")}</b></td><td ${stick("th-card-sticky th-card-voucher")}></td>${td("", tf)}${multi ? td("", tf) : ""}${td("", tf)}
+			${td(num(data.totals.qty_in), right + tf)}${td(num(data.totals.qty_out), right + tf + "color:var(--red);")}${td(num(data.closing_qty), right + tf)}
+			${cost ? td("", tf) + td("", tf) + td(closing_value != null ? format_currency(closing_value, bc) : "", right + tf) : ""}
+		</tr>`;
+
+		const thead = heads.map(([label, cls]) =>
+			`<th class="${cls === "r" ? "" : cls}" style="padding:4px 8px;border-bottom:2px solid var(--border-color);color:var(--text-muted);white-space:nowrap;${cls === "r" ? right : ""}">${label}</th>`
+		).join("");
+		$container.append(`
+			${data.truncated ? `<div class="alert alert-warning">${__("Showing the first {0} entries; totals are incomplete. Narrow the date range.", [5000])}</div>` : ""}
+			<div class="th-card-wrap" style="overflow-x:auto">
+				<table class="th-card-table" style="width:100%;font-size:12px;border-collapse:separate;border-spacing:0">
+					<thead><tr>${thead}</tr></thead>
+					<tbody>${rows.join("")}</tbody>
+					<tfoot>${foot}</tfoot>
+				</table>
+			</div>`);
+	}
+
+	_render_item_nav() {
 		const m = this.page.main;
-		const $panel = $(m).find(`.item-tab-panel[data-item="${item_code}"]`);
-		$panel.empty();
-		this._render_item_history(data, $panel);
+		const esc = frappe.utils.escape_html;
+		const p = this._item_panel;
+		const idx = p.items.findIndex(it => it.item_code === p.active);
+
+		$(m).find(".item-chips").html(p.items.map(it => `
+			<span class="item-chip ${it.item_code === p.active ? "active" : ""}" data-item="${esc(it.item_code)}" title="${esc(it.item_name)}">
+				${esc(it.item_code)} <a class="item-chip-x" href="#" title="${__("Remove")}">×</a>
+			</span>`).join(""));
+		$(m).find(".item-select").html(p.items.map(it =>
+			`<option value="${esc(it.item_code)}" ${it.item_code === p.active ? "selected" : ""}>${esc(it.item_code)}: ${esc(it.item_name)}</option>`
+		).join(""));
+		$(m).find(".item-nav").toggleClass("hidden", !p.items.length);
+		$(m).find(".item-prev").prop("disabled", idx <= 0);
+		$(m).find(".item-next").prop("disabled", idx < 0 || idx >= p.items.length - 1);
+		$(m).find(".th-view-switch [data-view]").each((_, el) => {
+			$(el).toggleClass("active", $(el).attr("data-view") === p.view);
+		});
+	}
+
+	_remove_item(item_code) {
+		const p = this._item_panel;
+		const idx = p.items.findIndex(it => it.item_code === item_code);
+		if (idx < 0) return;
+		p.items.splice(idx, 1);
+		delete p.history[item_code];
+		delete p.card[item_code];
+		if (!p.items.length) {
+			p.active = null;
+			this._render_item_nav();
+			$(this.page.main).find(".item-content").html(this._item_empty_html());
+		} else if (p.active === item_code) {
+			this._show_item(p.items[Math.min(idx, p.items.length - 1)].item_code);
+		} else {
+			this._render_item_nav();
+		}
 	}
 
 	_render_item_history({ item_details, stock_metrics, purchases, sales, open_po, open_so }, $container) {
@@ -568,8 +865,8 @@ class TransactionHistoryPage {
 				<div style="${col_style}">
 					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Stock")}</div>
 					${row(__("Current Stock"), `<span class="th-stock-hover" data-item="${d.item_code}" data-company="${company}" style="color:${stock_color};font-weight:700;cursor:help;border-bottom:1px dotted ${stock_color}">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
-					${row(__("Stock Value"), format_currency(m.stock_value, bc), true)}
-					${row(__("Avg. Rate"), format_currency(m.avg_rate, bc))}
+					${m.stock_value !== undefined ? row(__("Stock Value"), format_currency(m.stock_value, bc), true) : ""}
+					${m.avg_rate !== undefined ? row(__("Avg. Rate"), format_currency(m.avg_rate, bc)) : ""}
 					${row(__("UOM"), d.stock_uom || "—")}
 					${row(__("Valuation"), d.valuation_method || "—")}
 				</div>
@@ -596,7 +893,8 @@ class TransactionHistoryPage {
 		const th = (label, align) =>
 			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
 
-		const empty_row = `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
+		const show_rate = !is_purchase || (rows.length ? rows.some(r => rate_key in r) : this._item_panel.can_see_cost !== false);
+		const empty_row = `<tr><td colspan="${show_rate ? 8 : 7}" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
 
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
@@ -606,7 +904,7 @@ class TransactionHistoryPage {
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-				<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+				${show_rate ? `<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>` : ""}
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
 			</tr>`).join("") : empty_row;
 
@@ -629,7 +927,7 @@ class TransactionHistoryPage {
 								${th(__("Qty"), true)}
 								${th(__("UOM"))}
 								${th(__("Rate"), true)}
-								${th(rate_label, true)}
+								${show_rate ? th(rate_label, true) : ""}
 								${th(__("Status"))}
 							</tr>
 						</thead>
@@ -772,6 +1070,7 @@ class TransactionHistoryPage {
 		const rate_key = is_customer ? "avg_rate" : "avg_valuation_rate";
 		const date_key = is_customer ? "last_sale" : "last_purchase";
 		const bc = this.base_currency;
+		const show_rate = rows.some(r => rate_key in r);
 
 		const accent = is_customer ? "var(--blue)" : "var(--green)";
 		const sort_icon = (key) => {
@@ -810,7 +1109,7 @@ class TransactionHistoryPage {
 						${th(__("Item Name"), "item_name")}
 						${th(count_col, count_key, "right")}
 						${th(__("Total Qty"), "total_qty", "right")}
-						${th(rate_col, rate_key, "right")}
+						${show_rate ? th(rate_col, rate_key, "right") : ""}
 						${th(__("Total Amount"), "total_amount", "right")}
 						${th_plain(__("Avail. Qty"), "right")}
 						${th(date_col, date_key)}
@@ -820,7 +1119,7 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const stock_color = (r.current_stock || 0) > 0 ? "var(--green)" : "var(--text-muted)";
-						const last_rate = parseFloat(r.last_rate || 0);
+						const last_rate = "last_rate" in r ? parseFloat(r.last_rate || 0) : "";
 						return `
 						<tr class="summary-row" data-item="${r.item_code}" data-avg-rate="${parseFloat(r[rate_key] || 0)}" data-last-rate="${last_rate}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
 							style="${i % 2 ? "background:var(--control-bg)" : "background:var(--bg-color)"};cursor:pointer"
@@ -833,7 +1132,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.item_name}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r[count_key]}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
-							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							${show_rate ? `<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${rate_key in r ? format_currency(r[rate_key], bc) : "—"}</td>` : ""}
 							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">
 								<span class="th-stock-hover" data-item="${r.item_code}" data-company="${company}"
@@ -845,7 +1144,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._summary_status_pill(r.overdue_count || 0, r.unpaid_count || 0)}</td>
 						</tr>
 						<tr class="detail-row hidden" data-detail-for="${r.item_code}">
-							<td colspan="11" style="padding:0;border-bottom:2px solid var(--border-color)">
+							<td colspan="${show_rate ? 11 : 10}" style="padding:0;border-bottom:2px solid var(--border-color)">
 								<div class="detail-content" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
@@ -874,7 +1173,25 @@ class TransactionHistoryPage {
 		$(m).on("click", ".btn-get-customer", () => this._load_customer_history());
 		$(m).on("click", ".btn-get-supplier", () => this._load_supplier_history());
 
-		$(m).on("click", ".btn-run-items", () => this._run_item_history());
+		// Item navigator
+		$(m).on("click", ".btn-pick-items", () => this._open_item_picker());
+		$(m).on("click", ".th-view-switch [data-view]", (e) => {
+			this._item_panel.view = $(e.currentTarget).attr("data-view");
+			if (this._item_panel.active) this._show_item(this._item_panel.active);
+			else this._render_item_nav();
+		});
+		$(m).on("change", ".item-select", (e) => this._show_item($(e.currentTarget).val()));
+		$(m).on("click", ".item-prev, .item-next", (e) => {
+			const p = this._item_panel;
+			const idx = p.items.findIndex(it => it.item_code === p.active) + ($(e.currentTarget).hasClass("item-next") ? 1 : -1);
+			if (p.items[idx]) this._show_item(p.items[idx].item_code);
+		});
+		$(m).on("click", ".item-chip", (e) => this._show_item($(e.currentTarget).attr("data-item")));
+		$(m).on("click", ".item-chip-x", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this._remove_item($(e.currentTarget).closest(".item-chip").attr("data-item"));
+		});
 
 		// Current Stock hover — warehouse breakdown popover
 		$(m).on("mouseenter", ".th-stock-hover", (e) => {
@@ -884,22 +1201,10 @@ class TransactionHistoryPage {
 			$("#th-warehouse-popover").remove();
 		});
 
-		// Item tab switching
-		$(m).on("click", ".item-tab-link", (e) => {
-			e.preventDefault();
-			const item_code = $(e.currentTarget).data("item");
-			$(m).find(".item-tab-link").removeClass("active");
-			$(e.currentTarget).addClass("active");
-			$(m).find(".item-tab-panel").addClass("hidden");
-			$(m).find(`.item-tab-panel[data-item="${item_code}"]`).removeClass("hidden");
-			this._item_panel.active_tab = item_code;
-		});
-
-		// Item results search filter
+		// Item results search filter — rows of the item shown in .item-content
 		$(m).on("input", ".item-results-search", (e) => {
 			const val = $(e.currentTarget).val().toLowerCase();
-			const $active = $(m).find(".item-tab-panel:not(.hidden)");
-			$active.find("tbody tr").each(function () {
+			$(m).find(".item-content tbody tr").each(function () {
 				const text = $(this).text().toLowerCase();
 				$(this).toggleClass("hidden", val !== "" && !text.includes(val));
 			});
@@ -955,104 +1260,6 @@ class TransactionHistoryPage {
 			if (!val) {
 				$table.find(".detail-content tbody tr").removeClass("hidden");
 			}
-		});
-
-		// Item panel toggle (collapse/expand sidebar)
-		$(m).on("click", ".btn-toggle-item-panel", () => {
-			const $sidebar = $(m).find(".item-panel-sidebar");
-			const collapsed = $sidebar.hasClass("item-panel-collapsed");
-			if (collapsed) {
-				$sidebar.removeClass("item-panel-collapsed").css({ width: "224px", "min-width": "224px", padding: "10px", overflow: "" });
-				$sidebar.find(".item-panel-body").show();
-				$sidebar.find(".item-panel-label").show();
-			} else {
-				$sidebar.addClass("item-panel-collapsed").css({ width: "36px", "min-width": "36px", padding: "4px 2px", overflow: "hidden" });
-				$sidebar.find(".item-panel-body").hide();
-				$sidebar.find(".item-panel-label").hide();
-			}
-		});
-
-		// Item checklist — checkbox toggle
-		$(m).on("change", ".item-checkbox", (e) => {
-			const idx = parseInt($(e.currentTarget).data("idx"), 10);
-			this._item_panel.items[idx].checked = e.currentTarget.checked;
-			const checked = this._item_panel.items.filter(it => it.checked).length;
-			$(m).find(".btn-run-items").text(__("Run ({0})", [checked])).prop("disabled", checked === 0);
-		});
-
-		// Item checklist — remove item
-		$(m).on("click", ".btn-remove-item", (e) => {
-			e.stopPropagation();
-			const idx = parseInt($(e.currentTarget).data("idx"), 10);
-			if (idx < 0 || idx >= this._item_panel.items.length) return;
-			this._item_panel.items.splice(idx, 1);
-			this._render_item_checklist();
-		});
-
-		// Item checklist — clear all
-		$(m).on("click", ".btn-clear-items", () => {
-			this._item_panel.items = [];
-			this._render_item_checklist();
-			$(m).find(".item-tabs-strip, .item-content").empty();
-		});
-
-		// Item group filter — load items in group when selected
-		$(m).on("awesomplete-select", ".ctrl-item-group input", () => {
-			setTimeout(() => {
-				const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
-				if (!group) return;
-				frappe.db.get_list("Item", {
-					filters: { item_group: group, disabled: 0 },
-					fields: ["name", "item_name"],
-					limit: 500,
-				}).then(items => {
-					items.forEach(it => this._add_item_to_panel(it.name, it.item_name));
-				});
-			}, 50);
-		});
-
-		// Item search-and-add — on select
-		$(m).on("awesomplete-select", ".ctrl-item-add input", (e) => {
-			// Value is set asynchronously; wait one tick
-			setTimeout(() => {
-				const val = this.controls.item_add ? this.controls.item_add.get_value() : null;
-				if (!val) return;
-				// Get item_name for display
-				frappe.db.get_value("Item", val, "item_name").then(r => {
-					this._add_item_to_panel(val, r.message ? r.message.item_name : val);
-					this.controls.item_add.set_value("");
-				});
-			}, 50);
-		});
-
-		// "Add all filtered" — inject footer link into awesomplete dropdown each time it opens.
-		// setTimeout defers until after Frappe appends its own footer items (Create new, Advanced Search).
-		$(m).on("awesomplete-open", ".ctrl-item-add input", (e) => {
-			setTimeout(() => {
-				const $ul = $(e.target).closest(".awesomplete").find("ul");
-				if (!$ul.length || !$ul.is(":visible") || $ul.find(".add-all-filtered-li").length) return;
-				$ul.append(`<li class="add-all-filtered-li" role="option" style="border-top:1px solid var(--border-color);padding:5px 10px;font-size:11px;color:var(--blue);background:var(--fg-color);cursor:pointer;text-align:center;font-style:italic">${__("+ Add all filtered")}</li>`);
-			}, 0);
-		});
-		$(m).on("mousedown", ".ctrl-item-add .add-all-filtered-li", (e) => { e.preventDefault(); });
-		$(m).on("click", ".ctrl-item-add .add-all-filtered-li", () => {
-			const txt = (this.controls.item_add ? this.controls.item_add.get_value() : "") || "";
-			const group = this.controls.item_group ? this.controls.item_group.get_value() : null;
-			frappe.call({
-				method: "cecypo_frappe_reports.cecypo_frappe_reports.api.item_query",
-				args: {
-					doctype: "Item", txt, searchfield: "name",
-					start: 0, page_len: 500,
-					filters: JSON.stringify(group ? { item_group: group } : {}),
-					as_dict: 1,
-				},
-			}).then(r => {
-				const results = r.message || [];
-				if (!results.length) { frappe.show_alert({ message: __("No items found"), indicator: "orange" }); return; }
-				results.forEach(it => this._add_item_to_panel(it.name, it.item_name || it.name));
-				frappe.show_alert({ message: __("{0} item(s) added", [results.length]), indicator: "green" });
-				this.controls.item_add.set_value("");
-			});
 		});
 
 		// Item section collapse toggle
@@ -1504,6 +1711,7 @@ class TransactionHistoryPage {
 		const rate_label = is_customer ? __("Base Rate") : __("Val. Rate");
 		const rate_key = is_customer ? "base_rate" : "valuation_rate";
 		const bc = this.base_currency;
+		const show_rate = rows.some(r => rate_key in r);
 		// detail_doctype is passed by the accordion handler so PI vs PR links correctly
 		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-invoice");
 
@@ -1517,7 +1725,7 @@ class TransactionHistoryPage {
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Qty")}</th>
 						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
-						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>
+						${show_rate ? `<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>` : ""}
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Due Date")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Days Overdue")}</th>
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Status")}</th>
@@ -1534,7 +1742,7 @@ class TransactionHistoryPage {
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-							<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							${show_rate ? `<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>` : ""}
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—"}</td>
 							<td style="padding:3px 8px;text-align:right;${overdue_style}border-bottom:1px solid var(--border-color)">${overdue != null ? overdue : "—"}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
@@ -1941,8 +2149,8 @@ class TransactionHistoryPage {
 		$m.find(`table[data-party-type="${party_type}"] .party-row-check:checked`).each((_, el) => {
 			const $row = $(el).closest(".summary-row");
 			const item_name = $row.find("td").eq(3).text().trim();
-			const last_rate = parseFloat($row.attr("data-last-rate") || 0);
-			lines.push(`${item_name}: ${format_number(last_rate, null, 2)}`);
+			const last_rate = $row.attr("data-last-rate");
+			lines.push(`${item_name}: ${last_rate ? format_number(parseFloat(last_rate), null, 2) : "—"}`);
 		});
 		if (!lines.length) return;
 		navigator.clipboard.writeText(lines.join("\n")).then(() => {
@@ -2322,13 +2530,17 @@ class TransactionHistoryPage {
 		this._render_pricing_tab(history, prices || [], price_list_filter, $panel, item_code);
 	}
 
-	_render_pricing_tab({ purchases, sales }, prices, price_list_filter, $container, item_code) {
+	_render_pricing_tab({ purchases, sales, can_see_cost }, prices, price_list_filter, $container, item_code) {
 		const bc = this.base_currency;
 
 		const can_edit = frappe.model.can_write("Item Price");
-		const avg_val_rate = purchases.length
-			? purchases.reduce((s, r) => s + (r.valuation_rate || 0), 0) / purchases.length
+		const costed = purchases.filter(r => r.valuation_rate != null);
+		const avg_val_rate = costed.length
+			? costed.reduce((s, r) => s + r.valuation_rate, 0) / costed.length
 			: null;
+		const show_val = purchases.length
+			? purchases.some(r => "valuation_rate" in r)
+			: (can_see_cost ?? this._item_panel.can_see_cost) !== false;
 
 		const price_panel_html = `
 			<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:16px">
@@ -2434,7 +2646,7 @@ class TransactionHistoryPage {
 				<div style="overflow:auto;max-height:340px">
 				<table style="width:100%;border-collapse:collapse;font-size:12px">
 					<thead><tr style="background:var(--subtle-fg)">
-						${buy_th(__("Date"))}${buy_th(__("Voucher"))}${buy_th(__("Supplier"))}${buy_th(__("Qty"), true)}${buy_th(__("UOM"))}${buy_th(__("Rate"), true)}${buy_th(__("Val. Rate"), true)}${buy_th(__("Status"))}
+						${buy_th(__("Date"))}${buy_th(__("Voucher"))}${buy_th(__("Supplier"))}${buy_th(__("Qty"), true)}${buy_th(__("UOM"))}${buy_th(__("Rate"), true)}${show_val ? buy_th(__("Val. Rate"), true) : ""}${buy_th(__("Status"))}
 					</tr></thead>
 					<tbody>
 						${purchases.length ? purchases.map((r, i) => `
@@ -2445,9 +2657,9 @@ class TransactionHistoryPage {
 								<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 								<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-								<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r.valuation_rate, bc)}</td>
+								${show_val ? `<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r.valuation_rate, bc)}</td>` : ""}
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
-							</tr>`).join("") : `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${__("No purchases found")}</td></tr>`}
+							</tr>`).join("") : `<tr><td colspan="${show_val ? 8 : 7}" style="padding:12px;text-align:center" class="text-muted">${__("No purchases found")}</td></tr>`}
 					</tbody>
 				</table>
 				</div>
