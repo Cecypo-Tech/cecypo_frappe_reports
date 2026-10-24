@@ -1073,9 +1073,8 @@ def _get_item_details(item):
 
 
 def _get_stock_metrics(item, company, warehouse=None):
-	whs = _warehouse_filter(company, warehouse)
-	if whs is None:
-		whs = _permitted_warehouses(company)
+	order_whs = _warehouse_filter(company, warehouse)  # None = no clause (keeps NULL-warehouse lines)
+	whs = _permitted_warehouses(company) if order_whs is None else order_whs
 	bin_rows = []
 	if whs:
 		bin_rows = frappe.db.get_all(
@@ -1095,8 +1094,10 @@ def _get_stock_metrics(item, company, warehouse=None):
 		.where(poi.item_code == item)
 		.where(po.company == company)
 		.where(poi.qty > poi.received_qty)
-		.run()
 	)
+	if order_whs is not None:
+		pending_po = pending_po.where(poi.warehouse.isin(order_whs))
+	pending_po = pending_po.run() if order_whs != [] else []
 	pending_po_qty = flt(sum(r[0] for r in pending_po), 2)
 
 	soi = frappe.qb.DocType("Sales Order Item")
@@ -1109,8 +1110,10 @@ def _get_stock_metrics(item, company, warehouse=None):
 		.where(soi.item_code == item)
 		.where(so.company == company)
 		.where(soi.qty > soi.delivered_qty)
-		.run()
 	)
+	if order_whs is not None:
+		pending_so = pending_so.where(soi.warehouse.isin(order_whs))
+	pending_so = pending_so.run() if order_whs != [] else []
 	pending_so_qty = flt(sum(r[0] for r in pending_so), 2)
 
 	reorder = frappe.db.get_value(

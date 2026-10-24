@@ -814,28 +814,44 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			get_item_history, get_warehouse_stock,
 		)
 		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
 
-		# The dev site carries leftover Bin rows, so assert against the pre-existing level.
-		base = get_item_history(
-			item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC"
-		)["stock_metrics"]["current_stock"]
-		self._receipt(qty=10, warehouse="_Test Warehouse - _TC")
+		def metrics(**kw):
+			return get_item_history(item="_Test Item", company="_Test Company", **kw)["stock_metrics"]
+
+		# The dev site carries leftover (negative) Bin rows, so assert against the pre-existing levels.
+		base = metrics(warehouse="_Test Warehouse - _TC")["current_stock"]
+		base_so = metrics(warehouse="_Test Warehouse - _TC")["pending_so_qty"]
+		receipt = 10 + max(0, -flt(base))  # also covers the negative level so the invoice can submit
+		self._receipt(qty=receipt, warehouse="_Test Warehouse - _TC")
 		self._receipt(qty=5, warehouse="_Test Warehouse 1 - _TC")
-		create_sales_invoice(
+		si_other = create_sales_invoice(
 			item_code="_Test Item", qty=1, rate=300, update_stock=1,
 			warehouse="_Test Warehouse 1 - _TC", company="_Test Company",
+		)
+		si_ok = create_sales_invoice(
+			item_code="_Test Item", qty=1, rate=310, update_stock=1,
+			warehouse="_Test Warehouse - _TC", company="_Test Company",
+		)
+		make_sales_order(
+			item_code="_Test Item", qty=4, warehouse="_Test Warehouse 1 - _TC", company="_Test Company"
 		)
 		email = self._as_warehouse_restricted_user()
 		frappe.set_user(email)
 		try:
 			d = get_item_history(item="_Test Item", company="_Test Company")
-			self.assertEqual(d["stock_metrics"]["current_stock"], flt(base + 10, 2))
-			self.assertEqual(d["sales"], [])
+			self.assertEqual(d["stock_metrics"]["current_stock"], flt(base + receipt - 1, 2))
+			self.assertIn(si_ok.name, [r["voucher_no"] for r in d["sales"]])
+			self.assertNotIn(si_other.name, [r["voucher_no"] for r in d["sales"]])
+			self.assertEqual(d["stock_metrics"]["pending_so_qty"], base_so)
 			d2 = get_item_history(
 				item="_Test Item", company="_Test Company", warehouse="_Test Warehouse 1 - _TC"
 			)
 			self.assertEqual(d2["stock_metrics"]["current_stock"], 0)
+			self.assertEqual(d2["stock_metrics"]["pending_so_qty"], 0)
 			self.assertEqual(d2["purchases"], [])
+			self.assertEqual(d2["sales"], [])
+			self.assertEqual(d2["open_so"], [])
 			whs = [w["warehouse"] for w in get_warehouse_stock("_Test Item", "_Test Company")]
 			# _Test Warehouse may hold negative leftover stock here, so assert on what must be absent.
 			self.assertEqual(set(whs) - {"_Test Warehouse - _TC"}, set())
@@ -844,6 +860,7 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		self.assertIn(
 			"_Test Warehouse 1 - _TC", [w["warehouse"] for w in get_warehouse_stock("_Test Item", "_Test Company")]
 		)
+		self.assertEqual(metrics(warehouse="_Test Warehouse 1 - _TC")["pending_so_qty"], 4)
 
 	def test_open_orders_without_warehouse_still_listed_for_unrestricted_user(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
