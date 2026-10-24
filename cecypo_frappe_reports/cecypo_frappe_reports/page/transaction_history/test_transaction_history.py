@@ -772,6 +772,7 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 			self.assertGreaterEqual(len(rows), 1)
 			for r in rows:
 				self.assertNotIn("avg_valuation_rate", r)
+				self.assertNotIn("last_rate", r)
 			rows = get_supplier_item_transactions(
 				supplier="_Test Supplier", item_code="_Test Item", company="_Test Company", source="pr",
 			)
@@ -780,3 +781,5 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 				self.assertNotIn("valuation_rate", r)
 		finally:
 			frappe.set_user("Administrator")
+		rows = get_supplier_history(supplier="_Test Supplier", company="_Test Company", source="pr")
+		self.assertIn("last_rate", rows[0])

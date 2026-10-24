@@ -217,6 +217,10 @@ def get_supplier_history(supplier, company, from_date=None, to_date=None, source
 		r["unpaid_count"] = r.get("unpaid_count") or 0
 		r["current_stock"] = stock_map.get(r["item_code"], 0.0)
 		r["last_rate"] = last_rate_map.get(r["item_code"], 0.0)
+	if not _can_see_cost():
+		# last_rate here is the last PI/PR valuation rate, so it is cost (unlike the customer sale price)
+		for r in rows:
+			r.pop("last_rate", None)
 	return _strip_cost(rows)
 
 
