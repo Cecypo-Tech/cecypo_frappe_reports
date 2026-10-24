@@ -530,11 +530,13 @@ class TransactionHistoryPage {
 			return;
 		}
 		$wrap.html(`<div class="text-muted" style="padding:16px">${__("Loading...")}</div>`);
+		const fail = () => $wrap.html(`<div class="text-muted" style="padding:16px">${__("Could not search items.")}</div>`);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.search_items",
 			args: { company: this.controls.item_company.get_value(), txt, item_group: group },
 			callback: (r) => {
-				if (gen !== dialog._gen || !r.message) return; // superseded search
+				if (gen !== dialog._gen) return; // superseded search
+				if (!r.message) return fail();
 				this._render_picker_table($wrap, r.message);
 				dialog._rows = {};
 				r.message.items.forEach(it => { dialog._rows[it.item_code] = it; });
@@ -542,6 +544,9 @@ class TransactionHistoryPage {
 					r.message.truncated ? __("Showing first {0} — refine your search", [100]) : ""
 				);
 				this._picker_sync(dialog);
+			},
+			error: () => {
+				if (gen === dialog._gen) fail();
 			},
 		});
 	}
@@ -665,6 +670,11 @@ class TransactionHistoryPage {
 		const gen = this._run_generation;
 		const cache = p.card;
 		const from_date = this.controls.item_from.get_value() || null;
+		const fail = () => {
+			if (p.active === item_code && p.view === "card") {
+				$content.html(`<div class="text-muted" style="padding:20px">${__("Could not load the stock card.")}</div>`);
+			}
+		};
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_stock_card",
 			args: {
@@ -675,9 +685,14 @@ class TransactionHistoryPage {
 				warehouse: this.controls.item_warehouse.get_value() || null,
 			},
 			callback: (r) => {
-				if (!r.message || gen !== this._run_generation || cache !== p.card) return; // stale
+				if (gen !== this._run_generation || cache !== p.card) return; // stale
+				if (!r.message) return fail();
 				cache[item_code] = { data: r.message, from_date };
 				if (p.active === item_code && p.view === "card") this._paint_stock_card(item_code);
+			},
+			error: () => {
+				if (gen !== this._run_generation || cache !== p.card) return; // stale
+				fail();
 			},
 		});
 	}
