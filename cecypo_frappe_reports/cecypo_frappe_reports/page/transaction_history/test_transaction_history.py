@@ -6,7 +6,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
 
 from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
-	search_items,
+	get_stock_card, search_items,
 )
 
 
@@ -942,3 +942,90 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		res = search_items(company="_Test Company", txt="_Test", limit="2")
 		self.assertEqual(len(res["items"]), 2)
 		self.assertTrue(res["truncated"])
+
+	def test_stock_card_single_warehouse_balance_matches_ledger(self):
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+		from frappe.utils import add_days, today
+
+		self._receipt(qty=50, rate=100, posting_date=add_days(today(), -10))
+		create_sales_invoice(
+			item_code="_Test Item", qty=3, rate=300, update_stock=1,
+			warehouse="_Test Warehouse - _TC", company="_Test Company",
+		)
+		# dev data holds future-dated SLEs, so bound the card at today
+		d = get_stock_card(
+			item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC", to_date=today())
+		self.assertTrue(d["single_warehouse"])
+		last = d["rows"][-1]
+		self.assertEqual(last["voucher_type"], "Sales Invoice")
+		self.assertEqual(last["qty_out"], 3)
+		self.assertEqual(last["qty_in"], 0)
+		self.assertEqual(last["rate"], 300)
+		self.assertEqual(last["party"], "_Test Customer")
+		# not Bin.actual_qty: future-dated entries make the Bin differ from the balance as of today
+		sle_qty = frappe.db.get_value(
+			"Stock Ledger Entry", {"voucher_no": last["voucher_no"], "item_code": "_Test Item"},
+			"qty_after_transaction")
+		self.assertEqual(last["balance"], flt(sle_qty, 2))
+		self.assertEqual(d["closing_qty"], flt(sle_qty, 2))
+		self.assertIn("valuation_rate", last)
+		self.assertIn("value", last)
+
+	def test_stock_card_multi_warehouse_running_balance_and_opening(self):
+		from frappe.utils import add_days, today
+
+		self._receipt(qty=10, warehouse="_Test Warehouse - _TC", posting_date=add_days(today(), -20))
+		self._receipt(qty=5, warehouse="_Test Warehouse 1 - _TC", posting_date=add_days(today(), -2))
+		d = get_stock_card(item="_Test Item", company="_Test Company", from_date=add_days(today(), -5))
+		self.assertFalse(d["single_warehouse"])
+		whs = frappe.get_all(
+			"Warehouse", {"company": "_Test Company", "is_group": 0, "disabled": 0}, pluck="name")
+		opening = frappe.db.sql(
+			"""select coalesce(sum(actual_qty), 0) from `tabStock Ledger Entry`
+			where item_code='_Test Item' and is_cancelled=0 and posting_date < %s and warehouse in %s""",
+			(add_days(today(), -5), whs),
+		)[0][0]
+		self.assertEqual(d["opening_qty"], flt(opening, 2))
+		in_range = sum(r["qty_in"] - r["qty_out"] for r in d["rows"])
+		self.assertEqual(d["rows"][-1]["balance"], flt(flt(opening) + in_range, 2))
+		self.assertEqual(d["closing_qty"], d["rows"][-1]["balance"])
+		self.assertGreaterEqual(d["totals"]["qty_in"], 5)
+
+	def test_stock_card_excludes_cancelled_entries(self):
+		se = self._receipt(qty=7)
+		se.cancel()
+		d = get_stock_card(item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC")
+		self.assertNotIn(se.name, [r["voucher_no"] for r in d["rows"]])
+
+	def test_stock_card_hides_cost_and_stock_entry_rate_for_cost_blind_user(self):
+		se = self._receipt(qty=4, rate=50)
+		frappe.set_user(self._as_sales_only_user())
+		try:
+			d = get_stock_card(item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC")
+			self.assertFalse(d["can_see_cost"])
+			self.assertNotIn("opening_value", d)
+			se_row = next(r for r in d["rows"] if r["voucher_no"] == se.name)
+			self.assertIsNone(se_row["rate"])
+			self.assertEqual(se_row["qty_in"], 4)
+			for r in d["rows"]:
+				for k in ("valuation_rate", "stock_value_difference", "value"):
+					self.assertNotIn(k, r)
+		finally:
+			frappe.set_user("Administrator")
+		d = get_stock_card(item="_Test Item", company="_Test Company", warehouse="_Test Warehouse - _TC")
+		se_row = next(r for r in d["rows"] if r["voucher_no"] == se.name)
+		self.assertEqual(se_row["rate"], 50)
+
+	def test_stock_card_respects_warehouse_user_permission(self):
+		self._receipt(qty=10, warehouse="_Test Warehouse - _TC")
+		self._receipt(qty=5, warehouse="_Test Warehouse 1 - _TC")
+		frappe.set_user(self._as_warehouse_restricted_user())
+		try:
+			d = get_stock_card(item="_Test Item", company="_Test Company")
+			self.assertEqual({r["warehouse"] for r in d["rows"]}, {"_Test Warehouse - _TC"})
+			self.assertTrue(d["single_warehouse"])
+			d2 = get_stock_card(
+				item="_Test Item", company="_Test Company", warehouse="_Test Warehouse 1 - _TC")
+			self.assertEqual(d2["rows"], [])
+		finally:
+			frappe.set_user("Administrator")

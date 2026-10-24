@@ -547,6 +547,108 @@ def search_items(company, txt="", item_group=None, limit=100):
 	return out
 
 
+STOCK_CARD_LIMIT = 5000
+PARTY_VOUCHERS = {
+	"Sales Invoice": "customer", "Delivery Note": "customer", "POS Invoice": "customer",
+	"Purchase Invoice": "supplier", "Purchase Receipt": "supplier",
+}
+
+
+@frappe.whitelist()
+def get_stock_card(item, company, from_date=None, to_date=None, warehouse=None):
+	"""Stock ledger for one item over the user's permitted warehouses, with a running balance."""
+	can_cost = _can_see_cost()
+	whs = _warehouse_filter(company, warehouse)
+	if whs is None:
+		whs = _permitted_warehouses(company)
+	out = {
+		"can_see_cost": can_cost, "warehouses": whs, "single_warehouse": len(whs) == 1,
+		"truncated": False, "opening_qty": 0, "opening_value": 0, "closing_qty": 0,
+		"totals": {"qty_in": 0, "qty_out": 0}, "rows": [],
+	}
+	if whs:
+		_fill_stock_card(out, item, whs, from_date, to_date, can_cost)
+	if not can_cost:
+		out.pop("opening_value")
+	return out
+
+
+def _fill_stock_card(out, item, whs, from_date, to_date, can_cost):
+	Sle = frappe.qb.DocType("Stock Ledger Entry")
+	base = (
+		frappe.qb.from_(Sle)
+		.where(Sle.item_code == item)
+		.where(Sle.warehouse.isin(whs))
+		.where(Sle.is_cancelled == 0)
+		.where(Sle.docstatus < 2)
+	)
+	if from_date:
+		opening = (
+			base.where(Sle.posting_date < getdate(from_date))
+			.select(fn.Sum(Sle.actual_qty), fn.Sum(Sle.stock_value_difference))
+			.run()[0]
+		)
+		out["opening_qty"], out["opening_value"] = flt(opening[0], 2), flt(opening[1], 2)
+		base = base.where(Sle.posting_date >= getdate(from_date))
+	if to_date:
+		base = base.where(Sle.posting_date <= getdate(to_date))
+	entries = (
+		base.select(
+			Sle.posting_date, Sle.posting_time, Sle.voucher_type, Sle.voucher_no, Sle.voucher_detail_no,
+			Sle.warehouse, Sle.actual_qty, Sle.qty_after_transaction, Sle.incoming_rate,
+			Sle.outgoing_rate, Sle.valuation_rate, Sle.stock_value, Sle.stock_value_difference,
+		)
+		.orderby(Sle.posting_datetime).orderby(Sle.creation)
+		.limit(STOCK_CARD_LIMIT + 1)
+		.run(as_dict=True)
+	)
+	out["truncated"] = len(entries) > STOCK_CARD_LIMIT
+	entries = entries[:STOCK_CARD_LIMIT]
+	party, rate = _stock_card_party_rates(entries)
+
+	single = out["single_warehouse"]
+	qty, value = out["opening_qty"], out["opening_value"]
+	for e in entries:
+		qty_in, qty_out = max(flt(e.actual_qty), 0), max(-flt(e.actual_qty), 0)
+		qty = flt(e.qty_after_transaction, 2) if single else flt(qty + flt(e.actual_qty), 2)
+		value = flt(e.stock_value, 2) if single else flt(value + flt(e.stock_value_difference), 2)
+		if e.voucher_type in PARTY_VOUCHERS:
+			r = rate.get((e.voucher_type, e.voucher_detail_no))
+		elif can_cost:
+			r = e.incoming_rate if e.actual_qty > 0 else e.outgoing_rate
+		else:
+			r = None
+		out["rows"].append({
+			"posting_date": e.posting_date, "posting_time": str(e.posting_time or ""),
+			"voucher_type": e.voucher_type, "voucher_no": e.voucher_no,
+			"party": party.get((e.voucher_type, e.voucher_no)), "warehouse": e.warehouse,
+			"rate": flt(r, 2) if r is not None else None,
+			"qty_in": flt(qty_in, 2), "qty_out": flt(qty_out, 2), "balance": qty,
+			"valuation_rate": flt(e.valuation_rate, 2),
+			"stock_value_difference": flt(e.stock_value_difference, 2), "value": value,
+		})
+		out["totals"]["qty_in"] += qty_in
+		out["totals"]["qty_out"] += qty_out
+	out["totals"] = {k: flt(v, 2) for k, v in out["totals"].items()}
+	out["closing_qty"] = qty
+	_strip_cost(out["rows"])
+
+
+def _stock_card_party_rates(entries):
+	"""Batched party and child-row base_rate lookups for the party vouchers among entries."""
+	party, rate = {}, {}
+	for vt, field in PARTY_VOUCHERS.items():
+		names = list({e.voucher_no for e in entries if e.voucher_type == vt})
+		if not names:
+			continue
+		for r in frappe.get_all(vt, {"name": ["in", names]}, ["name", field]):
+			party[(vt, r.name)] = r.get(field)
+		details = list({e.voucher_detail_no for e in entries if e.voucher_type == vt and e.voucher_detail_no})
+		for r in frappe.get_all(f"{vt} Item", {"name": ["in", details]}, ["name", "base_rate"]):
+			rate[(vt, r.name)] = r.base_rate
+	return party, rate
+
+
 @frappe.whitelist()
 def get_party_details(party_type, party, company=None, as_of_date=None, show_future_payments=0):
 	"""Return full profile: contacts, address, account stats, and unallocated advances.
