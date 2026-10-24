@@ -850,8 +850,8 @@ class TransactionHistoryPage {
 				<div style="${col_style}">
 					<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${__("Stock")}</div>
 					${row(__("Current Stock"), `<span class="th-stock-hover" data-item="${d.item_code}" data-company="${company}" style="color:${stock_color};font-weight:700;cursor:help;border-bottom:1px dotted ${stock_color}">${format_number(m.current_stock, null, 2)} ${d.stock_uom || ""}</span>`)}
-					${row(__("Stock Value"), format_currency(m.stock_value, bc), true)}
-					${row(__("Avg. Rate"), format_currency(m.avg_rate, bc))}
+					${m.stock_value !== undefined ? row(__("Stock Value"), format_currency(m.stock_value, bc), true) : ""}
+					${m.avg_rate !== undefined ? row(__("Avg. Rate"), format_currency(m.avg_rate, bc)) : ""}
 					${row(__("UOM"), d.stock_uom || "—")}
 					${row(__("Valuation"), d.valuation_method || "—")}
 				</div>
@@ -878,7 +878,8 @@ class TransactionHistoryPage {
 		const th = (label, align) =>
 			`<th style="padding:5px 8px;${align ? "text-align:right;" : ""}border-bottom:2px solid ${accent};white-space:nowrap;color:var(--text-muted);font-weight:600">${label}</th>`;
 
-		const empty_row = `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
+		const show_rate = rows.some(r => rate_key in r);
+		const empty_row = `<tr><td colspan="${show_rate ? 8 : 7}" style="padding:12px;text-align:center" class="text-muted">${is_purchase ? __("No purchases found") : __("No sales found")}</td></tr>`;
 
 		const body = rows.length ? rows.map((r, i) => `
 			<tr style="${i % 2 ? "background:var(--control-bg)" : ""}">
@@ -888,7 +889,7 @@ class TransactionHistoryPage {
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 				<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-				<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+				${show_rate ? `<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>` : ""}
 				<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
 			</tr>`).join("") : empty_row;
 
@@ -911,7 +912,7 @@ class TransactionHistoryPage {
 								${th(__("Qty"), true)}
 								${th(__("UOM"))}
 								${th(__("Rate"), true)}
-								${th(rate_label, true)}
+								${show_rate ? th(rate_label, true) : ""}
 								${th(__("Status"))}
 							</tr>
 						</thead>
@@ -1054,6 +1055,7 @@ class TransactionHistoryPage {
 		const rate_key = is_customer ? "avg_rate" : "avg_valuation_rate";
 		const date_key = is_customer ? "last_sale" : "last_purchase";
 		const bc = this.base_currency;
+		const show_rate = rows.some(r => rate_key in r);
 
 		const accent = is_customer ? "var(--blue)" : "var(--green)";
 		const sort_icon = (key) => {
@@ -1092,7 +1094,7 @@ class TransactionHistoryPage {
 						${th(__("Item Name"), "item_name")}
 						${th(count_col, count_key, "right")}
 						${th(__("Total Qty"), "total_qty", "right")}
-						${th(rate_col, rate_key, "right")}
+						${show_rate ? th(rate_col, rate_key, "right") : ""}
 						${th(__("Total Amount"), "total_amount", "right")}
 						${th_plain(__("Avail. Qty"), "right")}
 						${th(date_col, date_key)}
@@ -1102,7 +1104,7 @@ class TransactionHistoryPage {
 				<tbody>
 					${rows.map((r, i) => {
 						const stock_color = (r.current_stock || 0) > 0 ? "var(--green)" : "var(--text-muted)";
-						const last_rate = parseFloat(r.last_rate || 0);
+						const last_rate = "last_rate" in r ? parseFloat(r.last_rate || 0) : "";
 						return `
 						<tr class="summary-row" data-item="${r.item_code}" data-avg-rate="${parseFloat(r[rate_key] || 0)}" data-last-rate="${last_rate}" data-party="${party}" data-party-type="${party_type}" data-company="${company}"
 							style="${i % 2 ? "background:var(--control-bg)" : "background:var(--bg-color)"};cursor:pointer"
@@ -1115,7 +1117,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.item_name}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${r[count_key]}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.total_qty, null, 2)}</td>
-							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							${show_rate ? `<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${rate_key in r ? format_currency(r[rate_key], bc) : "—"}</td>` : ""}
 							<td style="padding:4px 8px;text-align:right;font-weight:700;border-bottom:1px solid var(--border-color)">${format_currency(r.total_amount, bc)}</td>
 							<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">
 								<span class="th-stock-hover" data-item="${r.item_code}" data-company="${company}"
@@ -1127,7 +1129,7 @@ class TransactionHistoryPage {
 							<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._summary_status_pill(r.overdue_count || 0, r.unpaid_count || 0)}</td>
 						</tr>
 						<tr class="detail-row hidden" data-detail-for="${r.item_code}">
-							<td colspan="11" style="padding:0;border-bottom:2px solid var(--border-color)">
+							<td colspan="${show_rate ? 11 : 10}" style="padding:0;border-bottom:2px solid var(--border-color)">
 								<div class="detail-content" style="padding:8px 24px;background:var(--card-bg)">
 									<span class="text-muted">${__("Loading...")}</span>
 								</div>
@@ -1694,6 +1696,7 @@ class TransactionHistoryPage {
 		const rate_label = is_customer ? __("Base Rate") : __("Val. Rate");
 		const rate_key = is_customer ? "base_rate" : "valuation_rate";
 		const bc = this.base_currency;
+		const show_rate = rows.some(r => rate_key in r);
 		// detail_doctype is passed by the accordion handler so PI vs PR links correctly
 		const doctype_slug = detail_doctype || (is_customer ? "sales-invoice" : "purchase-invoice");
 
@@ -1707,7 +1710,7 @@ class TransactionHistoryPage {
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Qty")}</th>
 						<th style="padding:3px 8px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("UOM")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Rate")}</th>
-						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>
+						${show_rate ? `<th style="padding:3px 8px;text-align:right;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border-color)">${rate_label}</th>` : ""}
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Due Date")}</th>
 						<th style="padding:3px 8px;text-align:right;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Days Overdue")}</th>
 						<th style="padding:3px 8px;color:var(--text-muted);border-bottom:1px solid var(--border-color)">${__("Status")}</th>
@@ -1724,7 +1727,7 @@ class TransactionHistoryPage {
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 							<td style="padding:3px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-							<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>
+							${show_rate ? `<td style="padding:3px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r[rate_key], bc)}</td>` : ""}
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—"}</td>
 							<td style="padding:3px 8px;text-align:right;${overdue_style}border-bottom:1px solid var(--border-color)">${overdue != null ? overdue : "—"}</td>
 							<td style="padding:3px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
@@ -2131,8 +2134,8 @@ class TransactionHistoryPage {
 		$m.find(`table[data-party-type="${party_type}"] .party-row-check:checked`).each((_, el) => {
 			const $row = $(el).closest(".summary-row");
 			const item_name = $row.find("td").eq(3).text().trim();
-			const last_rate = parseFloat($row.attr("data-last-rate") || 0);
-			lines.push(`${item_name}: ${format_number(last_rate, null, 2)}`);
+			const last_rate = $row.attr("data-last-rate");
+			lines.push(`${item_name}: ${last_rate ? format_number(parseFloat(last_rate), null, 2) : "—"}`);
 		});
 		if (!lines.length) return;
 		navigator.clipboard.writeText(lines.join("\n")).then(() => {
@@ -2516,9 +2519,11 @@ class TransactionHistoryPage {
 		const bc = this.base_currency;
 
 		const can_edit = frappe.model.can_write("Item Price");
-		const avg_val_rate = purchases.length
-			? purchases.reduce((s, r) => s + (r.valuation_rate || 0), 0) / purchases.length
+		const costed = purchases.filter(r => r.valuation_rate != null);
+		const avg_val_rate = costed.length
+			? costed.reduce((s, r) => s + r.valuation_rate, 0) / costed.length
 			: null;
+		const show_val = purchases.some(r => "valuation_rate" in r);
 
 		const price_panel_html = `
 			<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:16px">
@@ -2624,7 +2629,7 @@ class TransactionHistoryPage {
 				<div style="overflow:auto;max-height:340px">
 				<table style="width:100%;border-collapse:collapse;font-size:12px">
 					<thead><tr style="background:var(--subtle-fg)">
-						${buy_th(__("Date"))}${buy_th(__("Voucher"))}${buy_th(__("Supplier"))}${buy_th(__("Qty"), true)}${buy_th(__("UOM"))}${buy_th(__("Rate"), true)}${buy_th(__("Val. Rate"), true)}${buy_th(__("Status"))}
+						${buy_th(__("Date"))}${buy_th(__("Voucher"))}${buy_th(__("Supplier"))}${buy_th(__("Qty"), true)}${buy_th(__("UOM"))}${buy_th(__("Rate"), true)}${show_val ? buy_th(__("Val. Rate"), true) : ""}${buy_th(__("Status"))}
 					</tr></thead>
 					<tbody>
 						${purchases.length ? purchases.map((r, i) => `
@@ -2635,9 +2640,9 @@ class TransactionHistoryPage {
 								<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_number(r.qty, null, 2)}</td>
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${r.uom || ""}</td>
 								<td style="padding:4px 8px;text-align:right;border-bottom:1px solid var(--border-color)">${format_currency(r.rate, r.currency)}</td>
-								<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r.valuation_rate, bc)}</td>
+								${show_val ? `<td style="padding:4px 8px;text-align:right;font-weight:600;border-bottom:1px solid var(--border-color)">${format_currency(r.valuation_rate, bc)}</td>` : ""}
 								<td style="padding:4px 8px;border-bottom:1px solid var(--border-color)">${this._status_pill(r.status)}</td>
-							</tr>`).join("") : `<tr><td colspan="8" style="padding:12px;text-align:center" class="text-muted">${__("No purchases found")}</td></tr>`}
+							</tr>`).join("") : `<tr><td colspan="${show_val ? 8 : 7}" style="padding:12px;text-align:center" class="text-muted">${__("No purchases found")}</td></tr>`}
 					</tbody>
 				</table>
 				</div>
