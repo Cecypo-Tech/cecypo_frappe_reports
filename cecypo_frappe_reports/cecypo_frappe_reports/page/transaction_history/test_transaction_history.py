@@ -716,3 +716,67 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 				get_party_details(party_type="customer", party="_Test Customer", company="_Test Company", as_of_date=frappe.utils.today())
 		finally:
 			frappe.set_user("Administrator")
+
+	def _receipt(self, qty=10, rate=100, warehouse="_Test Warehouse - _TC", item="_Test Item", posting_date=None):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+
+		return make_stock_entry(
+			item_code=item, qty=qty, rate=rate, to_warehouse=warehouse,
+			company="_Test Company", posting_date=posting_date,
+		)
+
+	def test_item_history_hides_cost_for_user_without_sle_read(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_item_history,
+		)
+
+		self._receipt()
+		email = self._as_sales_only_user()
+		frappe.set_user(email)
+		try:
+			self.assertFalse(frappe.has_permission("Stock Ledger Entry", "read"))
+			d = get_item_history(item="_Test Item", company="_Test Company")
+			self.assertFalse(d["can_see_cost"])
+			self.assertNotIn("avg_rate", d["stock_metrics"])
+			self.assertNotIn("stock_value", d["stock_metrics"])
+			self.assertIn("current_stock", d["stock_metrics"])
+			for r in d["purchases"]:
+				self.assertNotIn("valuation_rate", r)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_item_history_shows_cost_for_administrator(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_item_history,
+		)
+
+		self._receipt()
+		d = get_item_history(item="_Test Item", company="_Test Company")
+		self.assertTrue(d["can_see_cost"])
+		self.assertIn("avg_rate", d["stock_metrics"])
+		self.assertIn("stock_value", d["stock_metrics"])
+
+	def test_supplier_endpoints_hide_valuation_for_cost_blind_user(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+			get_supplier_history, get_supplier_item_transactions,
+		)
+		from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+
+		make_purchase_receipt(
+			item_code="_Test Item", qty=1, rate=50, warehouse="_Test Warehouse - _TC", supplier="_Test Supplier",
+		)
+		email = self._as_sales_only_user()
+		frappe.set_user(email)
+		try:
+			rows = get_supplier_history(supplier="_Test Supplier", company="_Test Company", source="pr")
+			self.assertGreaterEqual(len(rows), 1)
+			for r in rows:
+				self.assertNotIn("avg_valuation_rate", r)
+			rows = get_supplier_item_transactions(
+				supplier="_Test Supplier", item_code="_Test Item", company="_Test Company", source="pr",
+			)
+			self.assertGreaterEqual(len(rows), 1)
+			for r in rows:
+				self.assertNotIn("valuation_rate", r)
+		finally:
+			frappe.set_user("Administrator")

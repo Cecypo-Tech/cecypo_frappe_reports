@@ -13,6 +13,26 @@ def _can_see_billing_stats():
 	return frappe.session.user == "Administrator" or bool(BILLING_STATS_ROLES & set(frappe.get_roles()))
 
 
+COST_KEYS = frozenset({
+	"cost", "valuation_rate", "avg_valuation_rate", "avg_rate", "stock_value",
+	"incoming_rate", "outgoing_rate", "stock_value_difference", "opening_value", "value",
+})
+
+
+def _can_see_cost() -> bool:
+	return frappe.has_permission("Stock Ledger Entry", "read")
+
+
+def _strip_cost(rows):
+	"""Drop cost keys in place unless the user may read Stock Ledger Entry. Accepts a list of dicts."""
+	if _can_see_cost():
+		return rows
+	for r in rows:
+		for k in COST_KEYS:
+			r.pop(k, None)
+	return rows
+
+
 def _highlight_for(overdue_count, outstanding_total, advances_total):
 	if overdue_count > 0:
 		return "red"
@@ -25,8 +45,9 @@ def _highlight_for(overdue_count, outstanding_total, advances_total):
 def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
 	return {
 		"item_details": _get_item_details(item),
-		"stock_metrics": _get_stock_metrics(item, company, warehouse),
-		"purchases": _get_purchase_rows(item, company, from_date, to_date, warehouse),
+		"stock_metrics": _strip_cost([_get_stock_metrics(item, company, warehouse)])[0],
+		"purchases": _strip_cost(_get_purchase_rows(item, company, from_date, to_date, warehouse)),
+		"can_see_cost": _can_see_cost(),
 		"sales": _get_sales_rows(item, company, from_date, to_date, warehouse),
 		"open_po": _get_open_purchase_orders(item, company, warehouse),
 		"open_so": _get_open_sales_orders(item, company, warehouse),
@@ -196,7 +217,7 @@ def get_supplier_history(supplier, company, from_date=None, to_date=None, source
 		r["unpaid_count"] = r.get("unpaid_count") or 0
 		r["current_stock"] = stock_map.get(r["item_code"], 0.0)
 		r["last_rate"] = last_rate_map.get(r["item_code"], 0.0)
-	return rows
+	return _strip_cost(rows)
 
 
 @frappe.whitelist()
@@ -276,7 +297,7 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 			r["valuation_rate"] = flt(r["valuation_rate"], 2)
 			r["due_date"] = None
 			r["days_overdue"] = None  # PRs have no payment due date
-	return rows
+	return _strip_cost(rows)
 
 
 @frappe.whitelist()
