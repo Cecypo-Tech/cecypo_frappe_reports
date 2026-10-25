@@ -1,14 +1,54 @@
 # Copyright (c) 2026, Cecypo and contributors
 # For license information, please see license.txt
 
+import hashlib
+import json
 import re
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, flt, getdate, today
+from frappe.utils import cint, cstr, flt, getdate, now, today
 from pypika import functions as fn
 
 BILLING_STATS_ROLES = {"Accounts Manager", "Sales Manager"}
+
+# Read endpoints are served from Redis for this long. Refresh (refresh=1) bypasses and overwrites.
+CACHE_TTL_SEC = 600
+
+
+def _cache_scope() -> str:
+	"""Fingerprint of everything Frappe permissions derive from, so users who may see different
+	rows or columns never share an entry (cost columns, warehouse/company user permissions, roles)."""
+	scope = {
+		"roles": sorted(frappe.get_roles()),
+		"user_permissions": frappe.permissions.get_user_permissions(frappe.session.user),
+	}
+	return hashlib.sha1(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
+
+
+# Served by Frappe's get_list, which also applies creator-only and share permissions that roles and
+# user permissions do not capture, so these are never shared between users.
+PER_USER_CACHE = {"receivables", "payables"}
+
+
+def _cache_key(name: str, args: dict) -> str:
+	digest = hashlib.sha1(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
+	user = f":{frappe.session.user}" if name in PER_USER_CACHE else ""
+	return f"th_page:{name}:{_cache_scope()}{user}:{digest}"
+
+
+def _cached(name, args, refresh, compute):
+	"""Return the cached payload for (endpoint, args, caller permissions) or compute and store it.
+	The fetch time travels as frappe.response["th_fetched_at"], outside `message`, so list payloads keep their shape."""
+	key = _cache_key(name, args)
+	# Tests mutate data and re-query with the same filters; they opt in with frappe.flags.th_page_cache.
+	bypass = cint(refresh) or (frappe.flags.in_test and not frappe.flags.th_page_cache)
+	hit = None if bypass else frappe.cache.get_value(key, expires=True)
+	if hit is None:
+		hit = {"data": compute(), "at": now()}
+		frappe.cache.set_value(key, hit, expires_in_sec=CACHE_TTL_SEC)
+	frappe.response["th_fetched_at"] = hit["at"]
+	return hit["data"]
 
 
 def _can_see_billing_stats():
@@ -65,7 +105,12 @@ def _highlight_for(overdue_count, outstanding_total, advances_total):
 
 
 @frappe.whitelist()
-def get_item_history(item, company, from_date=None, to_date=None, warehouse=None):
+def get_item_history(item, company, from_date=None, to_date=None, warehouse=None, refresh=0):
+	args = {"item": item, "company": company, "from_date": from_date, "to_date": to_date, "warehouse": warehouse}
+	return _cached("item_history", args, refresh, lambda: _item_history(**args))
+
+
+def _item_history(item, company, from_date=None, to_date=None, warehouse=None):
 	return {
 		"item_details": _get_item_details(item),
 		"stock_metrics": _strip_cost([_get_stock_metrics(item, company, warehouse)])[0],
@@ -78,7 +123,12 @@ def get_item_history(item, company, from_date=None, to_date=None, warehouse=None
 
 
 @frappe.whitelist()
-def get_customer_history(customer, company, from_date=None, to_date=None):
+def get_customer_history(customer, company, from_date=None, to_date=None, refresh=0):
+	args = {"customer": customer, "company": company, "from_date": from_date, "to_date": to_date}
+	return _cached("customer_history", args, refresh, lambda: _customer_history(**args))
+
+
+def _customer_history(customer, company, from_date=None, to_date=None):
 	from pypika import Case
 
 	sii = frappe.qb.DocType("Sales Invoice Item")
@@ -168,7 +218,12 @@ def get_customer_item_transactions(customer, item_code, company, from_date=None,
 
 
 @frappe.whitelist()
-def get_supplier_history(supplier, company, from_date=None, to_date=None, source="pi"):
+def get_supplier_history(supplier, company, from_date=None, to_date=None, source="pi", refresh=0):
+	args = {"supplier": supplier, "company": company, "from_date": from_date, "to_date": to_date, "source": source}
+	return _cached("supplier_history", args, refresh, lambda: _supplier_history(**args))
+
+
+def _supplier_history(supplier, company, from_date=None, to_date=None, source="pi"):
 	from pypika import Case
 
 	if source == "pi":
@@ -328,7 +383,13 @@ def get_supplier_item_transactions(supplier, item_code, company, from_date=None,
 
 
 @frappe.whitelist()
-def get_receivables(company, as_of_date, customer=None, show_future_payments=0):
+def get_receivables(company, as_of_date, customer=None, show_future_payments=0, refresh=0):
+	frappe.has_permission("Sales Invoice", "read", throw=True)
+	args = {"company": company, "as_of_date": as_of_date, "customer": customer, "show_future_payments": show_future_payments}
+	return _cached("receivables", args, refresh, lambda: _receivables(**args))
+
+
+def _receivables(company, as_of_date, customer=None, show_future_payments=0):
 	"""AR aging summary — one row per customer with a non-zero net balance.
 
 	Sourced from ERPNext's own Accounts Receivable report engine (Payment Ledger Entry based)
@@ -337,7 +398,6 @@ def get_receivables(company, as_of_date, customer=None, show_future_payments=0):
 	and "outstanding" stays as-of-date consistent (a future-dated payment only nets in when
 	show_future_payments is on, matching how the standard report treats it).
 	"""
-	frappe.has_permission("Sales Invoice", "read", throw=True)
 	return _get_party_balances(
 		party_type="Customer",
 		company=company,
@@ -361,12 +421,17 @@ def get_receivables_detail(customer, company, as_of_date, show_future_payments=0
 
 
 @frappe.whitelist()
-def get_payables(company, as_of_date, supplier=None, show_future_payments=0):
+def get_payables(company, as_of_date, supplier=None, show_future_payments=0, refresh=0):
+	frappe.has_permission("Purchase Invoice", "read", throw=True)
+	args = {"company": company, "as_of_date": as_of_date, "supplier": supplier, "show_future_payments": show_future_payments}
+	return _cached("payables", args, refresh, lambda: _payables(**args))
+
+
+def _payables(company, as_of_date, supplier=None, show_future_payments=0):
 	"""AP aging summary — one row per supplier with a non-zero net balance.
 
 	Sourced from ERPNext's own Accounts Payable report engine — see get_receivables for why.
 	"""
-	frappe.has_permission("Purchase Invoice", "read", throw=True)
 	return _get_party_balances(
 		party_type="Supplier",
 		company=company,
@@ -560,7 +625,12 @@ PARTY_VOUCHERS = {
 
 
 @frappe.whitelist()
-def get_stock_card(item, company, from_date=None, to_date=None, warehouse=None):
+def get_stock_card(item, company, from_date=None, to_date=None, warehouse=None, refresh=0):
+	args = {"item": item, "company": company, "from_date": from_date, "to_date": to_date, "warehouse": warehouse}
+	return _cached("stock_card", args, refresh, lambda: _stock_card(**args))
+
+
+def _stock_card(item, company, from_date=None, to_date=None, warehouse=None):
 	"""Stock ledger for one item over the user's permitted warehouses, with a running balance."""
 	can_cost = _can_see_cost()
 	whs = _warehouse_filter(company, warehouse)
