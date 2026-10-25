@@ -140,6 +140,8 @@ class TransactionHistoryPage {
 			.item-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 			.item-chip-x { color: inherit; opacity: .6; padding: 0 4px; text-decoration: none !important; }
 			.item-chip-x:hover { opacity: 1; }
+			#page-transaction-history td, .th-picker-table td { color: var(--text-color); }
+			.th-picker-table tr.th-pick-oos td { color: var(--text-muted); }
 			.th-picker-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 			.th-picker-table th, .th-picker-table td {
 				padding: 4px 8px; border-bottom: 1px solid var(--border-color); white-space: nowrap; background: var(--fg-color);
@@ -603,7 +605,7 @@ class TransactionHistoryPage {
 					${data.can_see_cost ? `<th style="text-align:right">${__("Cost")}</th>` : ""}
 				</tr></thead>
 				<tbody>
-					${items.map(it => `<tr>
+					${items.map(it => `<tr class="${flt(it.total_qty) > 0 ? "" : "th-pick-oos"}">
 						<td class="th-pick-sticky th-pick-box"><input type="checkbox" class="th-pick" data-item="${esc(it.item_code)}"></td>
 						<td class="th-pick-sticky th-pick-code">${esc(it.item_code)}</td>
 						<td>${esc(it.item_name)}</td>
