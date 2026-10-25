@@ -11,6 +11,7 @@ const _ICONS = {
 	// statement dialog, which also offers the branded Statement of Accounts.
 	statement: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>`,
 	export: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+	refresh: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`,
 	info:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
 };
 
@@ -203,6 +204,7 @@ class TransactionHistoryPage {
 						<select class="form-control form-control-sm item-select" style="width:auto;max-width:320px"></select>
 						<button class="btn btn-sm btn-default item-prev" title="${__("Previous item")}">‹</button>
 						<button class="btn btn-sm btn-default item-next" title="${__("Next item")}">›</button>
+						${this._refresh_btn("items")}
 						<input type="search" class="item-results-search form-control form-control-sm"
 							placeholder="${__("Filter rows...")}" style="max-width:280px">
 					</div>
@@ -275,6 +277,7 @@ class TransactionHistoryPage {
 									<button class="btn btn-primary btn-sm btn-run-pricing" style="flex:1" disabled>${__("Run (0)")}</button>
 									<button class="btn btn-default btn-sm btn-clear-pricing" title="${__("Clear all")}" style="padding:4px 8px">✕</button>
 								</div>
+								<div style="margin-top:6px">${this._refresh_btn("pricing")}</div>
 							</div>
 						</div>
 						<div class="pricing-results" style="flex:1;min-width:0">
@@ -626,7 +629,7 @@ class TransactionHistoryPage {
 		return `<div class="text-muted" style="padding:20px">${__("Click \"Select Items…\" to choose the items to look at.")}</div>`;
 	}
 
-	_run_item_history() {
+	_run_item_history(refresh = false) {
 		const company = this.controls.item_company.get_value();
 		if (!company) { frappe.msgprint(__("Company is required")); return; }
 		const p = this._item_panel;
@@ -643,13 +646,13 @@ class TransactionHistoryPage {
 		p.args = { company, from_date, to_date, warehouse };
 		p.history = {};
 		p.card = {};
-		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
-		p.items.forEach(item => this._fetch_item_history(item.item_code, gen));
+		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code, refresh);
+		p.items.forEach(item => this._fetch_item_history(item.item_code, gen, refresh));
 	}
 
 	// One item's history. `null` in p.history marks a failed or timed-out fetch, which
 	// _show_item renders as a Retry prompt instead of an endless "Loading…".
-	_fetch_item_history(item_code, gen) {
+	_fetch_item_history(item_code, gen, refresh = false) {
 		const p = this._item_panel;
 		delete p.history[item_code];
 		const show = () => { if (p.active === item_code && p.view === "history") this._show_item(item_code); };
@@ -661,12 +664,13 @@ class TransactionHistoryPage {
 		const timer = setTimeout(failed, FETCH_TIMEOUT_MS);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
-			args: { item: item_code, ...p.args },
+			args: { item: item_code, ...p.args, refresh: refresh ? 1 : 0 },
 			always: () => clearTimeout(timer),
 			callback: (r) => {
 				if (gen !== this._run_generation) return; // stale — discard
 				if (!r.message) return failed();
 				p.can_see_cost = r.message.can_see_cost !== false;
+				r.message._fetched_at = r.th_fetched_at;
 				p.history[item_code] = r.message;
 				show();
 			},
@@ -678,12 +682,12 @@ class TransactionHistoryPage {
 		return `<div class="text-muted" style="padding:20px">${message} <a href="#" class="th-retry">${__("Retry")}</a></div>`;
 	}
 
-	_show_item(item_code) {
+	_show_item(item_code, refresh = false) {
 		const p = this._item_panel;
 		const $content = $(this.page.main).find(".item-content");
 		p.active = item_code;
 		this._render_item_nav();
-		if (p.view === "card") { this._load_stock_card(item_code); return; }
+		if (p.view === "card") { this._load_stock_card(item_code, refresh); return; }
 
 		const data = p.history[item_code];
 		$content.empty();
@@ -693,12 +697,13 @@ class TransactionHistoryPage {
 			return;
 		}
 		this._render_item_history(data, $content);
+		this._stamp($(this.page.main).find(".item-nav"), data._fetched_at);
 		$(this.page.main).find(".item-results-search").trigger("input"); // keep the active row filter
 	}
 
 	// ── Stock card ───────────────────────────────────────────────────────────
 
-	_load_stock_card(item_code) {
+	_load_stock_card(item_code, refresh = false) {
 		const p = this._item_panel;
 		const $content = $(this.page.main).find(".item-content");
 		if (p.card[item_code]) { this._paint_stock_card(item_code); return; }
@@ -720,12 +725,13 @@ class TransactionHistoryPage {
 				from_date,
 				to_date: this.controls.item_to.get_value() || null,
 				warehouse: this.controls.item_warehouse.get_value() || null,
+				refresh: refresh ? 1 : 0,
 			},
 			always: () => clearTimeout(timer),
 			callback: (r) => {
 				if (stale()) return;
 				if (!r.message) return fail(__("Could not load the stock card."));
-				cache[item_code] = { data: r.message, from_date };
+				cache[item_code] = { data: r.message, from_date, at: r.th_fetched_at };
 				if (p.active === item_code && p.view === "card") this._paint_stock_card(item_code);
 			},
 			error: () => fail(__("Could not load the stock card.")),
@@ -735,7 +741,8 @@ class TransactionHistoryPage {
 	_paint_stock_card(item_code) {
 		const p = this._item_panel;
 		const $content = $(this.page.main).find(".item-content");
-		const { data, from_date } = p.card[item_code];
+		const { data, from_date, at } = p.card[item_code];
+		this._stamp($(this.page.main).find(".item-nav"), at);
 		const it = p.items.find(i => i.item_code === item_code) || { item_code, item_name: "" };
 		const esc = frappe.utils.escape_html;
 		$content.empty().append(`<div style="font-weight:600;margin-bottom:8px">${__("Stock Card")}: ${esc(it.item_code)} ${esc(it.item_name)}</div>`);
@@ -818,6 +825,14 @@ class TransactionHistoryPage {
 
 	// ── Export: one table, as rendered ────────────────────────────────────────
 
+	// Reload control + "fetched … ago" stamp for one tab. Results come from a 10-minute server cache;
+	// the button re-calls the tab's loader with refresh=1, which bypasses and overwrites that cache.
+	_refresh_btn(tab) {
+		return `<button type="button" class="th-action-btn btn-refresh-tab" data-tab="${tab}" title="${__("Reload from the database")}">${_ICONS.refresh}</button><span class="th-fetched-at text-muted" style="font-size:11px;margin-left:4px"></span>`;
+	}
+	_stamp($scope, at) {
+		if (at) $scope.find(".th-fetched-at").first().text(__("fetched {0}", [frappe.datetime.comment_when(at)]));
+	}
 	_export_btn(title) {
 		return `<button type="button" class="th-action-btn btn-export-table" data-title="${frappe.utils.escape_html(title)}" title="${__("Export to Excel")}">${_ICONS.export}</button>`;
 	}
@@ -1073,7 +1088,7 @@ class TransactionHistoryPage {
 
 	// ── Customer History ──────────────────────────────────────────────────────
 
-	_load_customer_history() {
+	_load_customer_history(refresh = false) {
 		let customer = this.controls.customer.get_value();
 		let company = this.controls.cust_company.get_value();
 		if (!customer || !company) { frappe.msgprint(__("Customer and Company are required")); return; }
@@ -1087,6 +1102,7 @@ class TransactionHistoryPage {
 				company,
 				from_date: this.controls.cust_from.get_value() || null,
 				to_date: this.controls.cust_to.get_value() || null,
+				refresh: refresh ? 1 : 0,
 			},
 			callback: (r) => {
 				if (r.message != null) {
@@ -1094,6 +1110,7 @@ class TransactionHistoryPage {
 					this._cust_state.party = customer;
 					this._cust_state.company = company;
 					$content.html(this._render_party_summary(r.message, "customer", customer, company, this._cust_state));
+					this._stamp($content, r.th_fetched_at);
 				}
 			},
 		});
@@ -1101,7 +1118,7 @@ class TransactionHistoryPage {
 
 	// ── Supplier History ──────────────────────────────────────────────────────
 
-	_load_supplier_history() {
+	_load_supplier_history(refresh = false) {
 		let supplier = this.controls.supplier.get_value();
 		let company = this.controls.supp_company.get_value();
 		if (!supplier || !company) { frappe.msgprint(__("Supplier and Company are required")); return; }
@@ -1119,6 +1136,7 @@ class TransactionHistoryPage {
 				from_date: this.controls.supp_from.get_value() || null,
 				to_date: this.controls.supp_to.get_value() || null,
 				source: this._supp_source,
+				refresh: refresh ? 1 : 0,
 			},
 			callback: (r) => {
 				if (r.message != null) {
@@ -1126,6 +1144,7 @@ class TransactionHistoryPage {
 					this._supp_state.party = supplier;
 					this._supp_state.company = company;
 					$content.html(this._render_party_summary(r.message, "supplier", supplier, company, this._supp_state));
+					this._stamp($content, r.th_fetched_at);
 				}
 			},
 		});
@@ -1168,6 +1187,7 @@ class TransactionHistoryPage {
 				<input type="search" class="party-search form-control form-control-sm" data-party-type="${party_type}"
 					placeholder="${__("Filter rows...")}" style="max-width:240px">
 				${this._export_btn(__("{0} History {1}", [party_type === "customer" ? __("Customer") : __("Supplier"), party || ""]))}
+				${this._refresh_btn(party_type)}
 				<button class="btn-copy-selected-items" data-party-type="${party_type}" disabled
 					title="${__("Copy selected item names and prices to clipboard")}"
 					style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--border-color);border-radius:4px;background:transparent;cursor:not-allowed;color:var(--text-muted);opacity:.4;font-size:11px;flex-shrink:0">
@@ -1259,6 +1279,19 @@ class TransactionHistoryPage {
 		$(m).on("click", ".btn-get-supplier", () => this._load_supplier_history());
 
 		// Item navigator
+		$(m).on("click", ".btn-refresh-tab", (e) => {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			const run = {
+				items: () => this._run_item_history(true),
+				customer: () => this._load_customer_history(true),
+				supplier: () => this._load_supplier_history(true),
+				receivables: () => this._load_receivables(true),
+				payables: () => this._load_payables(true),
+				pricing: () => this._run_pricing(true),
+			}[$(e.currentTarget).attr("data-tab")];
+			run && run();
+		});
 		$(m).on("click", ".btn-pick-items", () => this._open_item_picker());
 		$(m).on("click", ".th-view-switch [data-view]", (e) => {
 			this._item_panel.view = $(e.currentTarget).attr("data-view");
@@ -1863,7 +1896,7 @@ class TransactionHistoryPage {
 
 	// ── Receivables ───────────────────────────────────────────────────────────
 
-	_load_receivables() {
+	_load_receivables(refresh = false) {
 		const m = this.page.main;
 		const company = this.controls.recv_company.get_value();
 		const as_of_date = this.controls.recv_as_of.get_value();
@@ -1874,7 +1907,7 @@ class TransactionHistoryPage {
 		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables",
-			args: { company, as_of_date, customer, show_future_payments },
+			args: { company, as_of_date, customer, show_future_payments, refresh: refresh ? 1 : 0 },
 			callback: (r) => {
 				if (r.message != null) {
 					this._recv_state.rows = r.message;
@@ -1882,6 +1915,7 @@ class TransactionHistoryPage {
 					this._recv_state.as_of_date = as_of_date;
 					this._recv_state.show_future_payments = show_future_payments;
 					this._render_receivables(r.message, company, as_of_date, customer);
+					this._stamp($content, r.th_fetched_at);
 					this._get_balance_basis().then((basis) => {
 						if (basis === "invoices") $(m).find(".receivables-content").prepend(this._basis_note_html());
 					});
@@ -1961,6 +1995,7 @@ class TransactionHistoryPage {
 				<input type="search" class="recv-search form-control form-control-sm"
 					placeholder="${__("Filter customers...")}" style="max-width:280px">
 				${this._export_btn(__("Receivables"))}
+				${this._refresh_btn("receivables")}
 			</div>
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" class="recv-summary-table">
@@ -2378,7 +2413,7 @@ class TransactionHistoryPage {
 
 	// ── Payables ──────────────────────────────────────────────────────────────
 
-	_load_payables() {
+	_load_payables(refresh = false) {
 		const m = this.page.main;
 		const company = this.controls.pay_company.get_value();
 		const as_of_date = this.controls.pay_as_of.get_value();
@@ -2389,7 +2424,7 @@ class TransactionHistoryPage {
 		$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables",
-			args: { company, as_of_date, supplier, show_future_payments },
+			args: { company, as_of_date, supplier, show_future_payments, refresh: refresh ? 1 : 0 },
 			callback: (r) => {
 				if (r.message != null) {
 					this._pay_state.rows = r.message;
@@ -2397,6 +2432,7 @@ class TransactionHistoryPage {
 					this._pay_state.as_of_date = as_of_date;
 					this._pay_state.show_future_payments = show_future_payments;
 					this._render_payables(r.message, company, as_of_date, supplier);
+					this._stamp($content, r.th_fetched_at);
 					this._get_balance_basis().then((basis) => {
 						if (basis === "invoices") $(m).find(".payables-content").prepend(this._basis_note_html());
 					});
@@ -2476,6 +2512,7 @@ class TransactionHistoryPage {
 				<input type="search" class="pay-search form-control form-control-sm"
 					placeholder="${__("Filter suppliers...")}" style="max-width:280px">
 				${this._export_btn(__("Payables"))}
+				${this._refresh_btn("payables")}
 			</div>
 			<div style="overflow-x:auto">
 			<table style="width:100%;border-collapse:collapse;font-size:12px" class="pay-summary-table">
@@ -2543,7 +2580,7 @@ class TransactionHistoryPage {
 
 	// ── Pricing ───────────────────────────────────────────────────────────────
 
-	_run_pricing() {
+	_run_pricing(refresh = false) {
 		const m = this.page.main;
 		const company = this.controls.pricing_company.get_value();
 		if (!company) { frappe.msgprint(__("Company is required")); return; }
@@ -2577,8 +2614,8 @@ class TransactionHistoryPage {
 			};
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
-				args: { item: item.item_code, company, from_date, to_date, warehouse: null },
-				callback: (r) => { history_data = r.message; maybe_render(); },
+				args: { item: item.item_code, company, from_date, to_date, warehouse: null, refresh: refresh ? 1 : 0 },
+				callback: (r) => { history_data = r.message; this._stamp($(m).find(".pricing-panel-body"), r.th_fetched_at); maybe_render(); },
 			});
 			frappe.call({
 				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_prices",
