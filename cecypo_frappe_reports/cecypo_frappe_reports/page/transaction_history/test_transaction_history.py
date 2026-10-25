@@ -9,7 +9,10 @@ from frappe.utils import flt
 from frappe.utils.xlsxutils import read_xlsx_file_from_attached_file
 
 from cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history import (
+	_cache_key,
+	_cache_scope,
 	export_table,
+	get_item_history,
 	get_stock_card,
 	search_items,
 )
@@ -1125,3 +1128,33 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 	def test_export_table_filename_is_safe(self):
 		export_table('Sales / "F071"\r\nX', json.dumps([["a"], ["b"]]))
 		self.assertRegex(frappe.response["filename"], r"^sales_f071_x_\d{4}-\d{2}-\d{2}\.xlsx$")
+
+	def test_cached_endpoint_serves_cache_until_refresh(self):
+		args = {"item": "__nonexistent__", "company": "_Test Company", "from_date": None, "to_date": None, "warehouse": None}
+		frappe.flags.th_page_cache = True  # the cache is bypassed in tests unless opted in
+		try:
+			first = get_item_history(**args)
+			self.assertIn("item_details", first)
+			self.assertTrue(frappe.response.get("th_fetched_at"))
+			frappe.cache.set_value(_cache_key("item_history", args), {"data": {"sentinel": 1}, "at": "x"}, expires_in_sec=60)
+			self.assertEqual(get_item_history(**args), {"sentinel": 1})
+			self.assertEqual(frappe.response["th_fetched_at"], "x")
+			self.assertIn("item_details", get_item_history(**args, refresh=1))
+			self.assertNotEqual(frappe.response["th_fetched_at"], "x")
+		finally:
+			frappe.flags.th_page_cache = False
+
+	def test_cache_scope_differs_between_users(self):
+		admin_scope = _cache_scope()
+		email = self._as_sales_only_user()
+		frappe.set_user(email)
+		try:
+			self.assertNotEqual(_cache_scope(), admin_scope)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_cache_key_differs_by_args(self):
+		a = _cache_key("x", {"item": "A", "company": "_Test Company"})
+		b = _cache_key("x", {"item": "B", "company": "_Test Company"})
+		self.assertNotEqual(a, b)
+		self.assertEqual(a, _cache_key("x", {"company": "_Test Company", "item": "A"}))
