@@ -154,6 +154,7 @@ class TransactionHistoryPage {
 			.th-card-table th.th-card-sticky { z-index: 3; }
 			.th-card-date { left: 0; min-width: 92px; }
 			.th-card-voucher { left: 92px; }
+			.th-picker-table tbody tr { cursor: pointer; }
 			.th-pick-wh { cursor: pointer; }
 			.th-pick-wh:hover { text-decoration: underline; color: var(--primary); }
 		`;
@@ -515,6 +516,11 @@ class TransactionHistoryPage {
 				else dialog._sel.delete(code);
 			});
 			this._picker_sync(dialog);
+		});
+		// Clicking anywhere else on a row toggles its checkbox.
+		$body.on("click", ".th-picker-table tbody tr", (e) => {
+			if ($(e.target).closest(".th-pick, .th-pick-wh").length) return;
+			$(e.currentTarget).find(".th-pick").trigger("click");
 		});
 		// A warehouse qty cell opens that item's Stock Card for that warehouse.
 		$body.on("click", ".th-pick-wh", (e) => {
