@@ -1158,3 +1158,10 @@ class TestTransactionHistoryPage(IntegrationTestCase):
 		b = _cache_key("x", {"item": "B", "company": "_Test Company"})
 		self.assertNotEqual(a, b)
 		self.assertEqual(a, _cache_key("x", {"company": "_Test Company", "item": "A"}))
+
+	def test_receivables_and_payables_cache_is_per_user(self):
+		# Those two go through Frappe's get_list, which applies creator-only and share permissions
+		# that roles + user permissions do not capture, so their entries are never shared.
+		self.assertIn("Administrator", _cache_key("receivables", {"company": "_Test Company"}))
+		self.assertIn("Administrator", _cache_key("payables", {"company": "_Test Company"}))
+		self.assertNotIn("Administrator", _cache_key("item_history", {"company": "_Test Company"}))

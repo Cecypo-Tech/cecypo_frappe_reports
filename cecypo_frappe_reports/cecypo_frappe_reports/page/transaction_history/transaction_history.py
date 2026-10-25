@@ -26,9 +26,15 @@ def _cache_scope() -> str:
 	return hashlib.sha1(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
 
 
+# Served by Frappe's get_list, which also applies creator-only and share permissions that roles and
+# user permissions do not capture, so these are never shared between users.
+PER_USER_CACHE = {"receivables", "payables"}
+
+
 def _cache_key(name: str, args: dict) -> str:
 	digest = hashlib.sha1(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
-	return f"th_page:{name}:{_cache_scope()}:{digest}"
+	user = f":{frappe.session.user}" if name in PER_USER_CACHE else ""
+	return f"th_page:{name}:{_cache_scope()}{user}:{digest}"
 
 
 def _cached(name, args, refresh, compute):

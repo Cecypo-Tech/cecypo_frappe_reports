@@ -643,7 +643,9 @@ class TransactionHistoryPage {
 		const unchanged = !refresh && p.args && JSON.stringify(args) === JSON.stringify(p.args);
 		if (unchanged) { // same filters: fetch only the items that were never requested, keep the rest
 			const gen = this._run_generation;
-			p.items.filter(it => !(it.item_code in p.history)).forEach(it => this._fetch_item_history(it.item_code, gen));
+			// never requested (no key) or failed (null); undefined = in flight, object = loaded
+			p.items.filter(it => !(it.item_code in p.history) || p.history[it.item_code] === null)
+				.forEach(it => this._fetch_item_history(it.item_code, gen));
 			this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
 			return;
 		}
@@ -659,11 +661,11 @@ class TransactionHistoryPage {
 		p.items.forEach(item => this._fetch_item_history(item.item_code, gen, refresh));
 	}
 
-	// One item's history. `null` in p.history marks a failed or timed-out fetch, which
-	// _show_item renders as a Retry prompt instead of an endless "Loading…".
+	// One item's history. In p.history: no key = never requested, undefined = in flight, null = failed
+	// or timed out (rendered by _show_item as a Retry prompt instead of an endless "Loading…").
 	_fetch_item_history(item_code, gen, refresh = false) {
 		const p = this._item_panel;
-		delete p.history[item_code];
+		p.history[item_code] = undefined;
 		const show = () => { if (p.active === item_code && p.view === "history") this._show_item(item_code); };
 		const failed = () => {
 			if (gen !== this._run_generation || p.history[item_code]) return; // stale, or a retry already succeeded
