@@ -71,7 +71,7 @@ class TransactionHistoryPage {
 				.item-chips, .item-nav, .th-view-switch { flex-wrap: wrap !important; }
 				.item-select { width: 100% !important; max-width: none !important; }
 				.item-results-search { max-width: none !important; flex: 1 1 100% !important; }
-				.item-chip, .item-prev, .item-next, .th-view-switch .btn { min-height: 32px; }
+				.item-chip, .item-prev, .item-next, .item-clear, .th-view-switch .btn { min-height: 32px; }
 				.th-picker-bar { flex-direction: column !important; }
 				.th-picker-bar > div { min-width: 0 !important; width: 100% !important; }
 				.th-picker-dialog .modal-dialog { margin: 0 !important; max-width: none !important; width: 100% !important; }
@@ -204,6 +204,7 @@ class TransactionHistoryPage {
 						<select class="form-control form-control-sm item-select" style="width:auto;max-width:320px"></select>
 						<button class="btn btn-sm btn-default item-prev" title="${__("Previous item")}">‹</button>
 						<button class="btn btn-sm btn-default item-next" title="${__("Next item")}">›</button>
+						<button class="btn btn-sm btn-default item-clear" title="${__("Close all items")}">${__("Clear all")}</button>
 						${this._refresh_btn("items")}
 						<input type="search" class="item-results-search form-control form-control-sm"
 							placeholder="${__("Filter rows...")}" style="max-width:280px">
@@ -454,14 +455,13 @@ class TransactionHistoryPage {
 			primary_action_label: __("Use selected ({0})", [0]),
 			primary_action: () => {
 				if (!dialog._sel.size) return;
-				this._item_panel.items = [...dialog._sel.values()];
+				const p = this._item_panel;
+				p.items = [...dialog._sel.values()];
+				for (const code of Object.keys(p.history)) { // unticked items drop their loaded results
+					if (!dialog._sel.has(code)) { delete p.history[code]; delete p.card[code]; }
+				}
 				dialog.hide();
 				this._run_item_history();
-			},
-			secondary_action_label: __("Clear"),
-			secondary_action: () => {
-				dialog._sel.clear();
-				this._picker_sync(dialog);
 			},
 			on_hide: () => dialog.$wrapper.remove(),
 		});
@@ -639,11 +639,20 @@ class TransactionHistoryPage {
 		const to_date = this.controls.item_to.get_value() || null;
 		const warehouse = this.controls.item_warehouse.get_value() || null;
 
+		const args = { company, from_date, to_date, warehouse };
+		const unchanged = !refresh && p.args && JSON.stringify(args) === JSON.stringify(p.args);
+		if (unchanged) { // same filters: fetch only the items that were never requested, keep the rest
+			const gen = this._run_generation;
+			p.items.filter(it => !(it.item_code in p.history)).forEach(it => this._fetch_item_history(it.item_code, gen));
+			this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
+			return;
+		}
+
 		// Generation counter: discard callbacks from superseded runs
 		this._run_generation = (this._run_generation || 0) + 1;
 		const gen = this._run_generation;
 
-		p.args = { company, from_date, to_date, warehouse };
+		p.args = args;
 		p.history = {};
 		p.card = {};
 		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code, refresh);
@@ -900,6 +909,14 @@ class TransactionHistoryPage {
 		$(m).find(".th-view-switch [data-view]").each((_, el) => {
 			$(el).toggleClass("active", $(el).attr("data-view") === p.view);
 		});
+	}
+
+	_clear_items() {
+		const p = this._item_panel;
+		this._run_generation = (this._run_generation || 0) + 1; // in-flight fetches become stale
+		p.items = []; p.history = {}; p.card = {}; p.active = null; p.args = null;
+		this._render_item_nav();
+		$(this.page.main).find(".item-content").html(this._item_empty_html());
 	}
 
 	_remove_item(item_code) {
@@ -1293,6 +1310,7 @@ class TransactionHistoryPage {
 			run && run();
 		});
 		$(m).on("click", ".btn-pick-items", () => this._open_item_picker());
+		$(m).on("click", ".item-clear", () => this._clear_items());
 		$(m).on("click", ".th-view-switch [data-view]", (e) => {
 			this._item_panel.view = $(e.currentTarget).attr("data-view");
 			if (this._item_panel.active) this._show_item(this._item_panel.active);
