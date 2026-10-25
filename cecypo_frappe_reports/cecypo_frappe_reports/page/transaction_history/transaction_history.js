@@ -840,7 +840,8 @@ class TransactionHistoryPage {
 		return `<button type="button" class="th-action-btn btn-refresh-tab" data-tab="${tab}" title="${__("Reload from the database")}">${_ICONS.refresh}</button><span class="th-fetched-at text-muted" style="font-size:11px;margin-left:4px"></span>`;
 	}
 	_stamp($scope, at) {
-		if (at) $scope.find(".th-fetched-at").first().text(__("fetched {0}", [frappe.datetime.comment_when(at)]));
+		// comment_when returns Frappe's <span class="frappe-timestamp"> (title carries the full time)
+		if (at) $scope.find(".th-fetched-at").first().html(__("fetched {0}", [frappe.datetime.comment_when(at)]));
 	}
 	_export_btn(title) {
 		return `<button type="button" class="th-action-btn btn-export-table" data-title="${frappe.utils.escape_html(title)}" title="${__("Export to Excel")}">${_ICONS.export}</button>`;
