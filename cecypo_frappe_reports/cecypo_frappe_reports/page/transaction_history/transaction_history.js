@@ -1,6 +1,9 @@
 // Copyright (c) 2026, Cecypo and contributors
 // For license information, please see license.txt
 
+// A fetch that has not answered by then is treated as lost: the panel offers Retry.
+const FETCH_TIMEOUT_MS = 20000;
+
 const _ICONS = {
 	copy:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
 	link:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
@@ -637,28 +640,42 @@ class TransactionHistoryPage {
 		this._run_generation = (this._run_generation || 0) + 1;
 		const gen = this._run_generation;
 
+		p.args = { company, from_date, to_date, warehouse };
 		p.history = {};
 		p.card = {};
 		this._show_item(p.items.some(i => i.item_code === p.active) ? p.active : p.items[0].item_code);
+		p.items.forEach(item => this._fetch_item_history(item.item_code, gen));
+	}
 
-		p.items.forEach(item => {
-			frappe.call({
-				method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
-				args: { item: item.item_code, company, from_date, to_date, warehouse },
-				callback: (r) => {
-					if (gen !== this._run_generation || !r.message) return; // stale — discard
-					p.can_see_cost = r.message.can_see_cost !== false;
-					p.history[item.item_code] = r.message;
-					if (p.active === item.item_code && p.view === "history") this._show_item(item.item_code);
-				},
-				error: () => {
-					if (gen !== this._run_generation) return;
-					if (p.active === item.item_code && p.view === "history") {
-						$(this.page.main).find(".item-content").html(`<div class="text-muted" style="padding:20px">${__("Could not load item history.")}</div>`);
-					}
-				},
-			});
+	// One item's history. `null` in p.history marks a failed or timed-out fetch, which
+	// _show_item renders as a Retry prompt instead of an endless "Loading…".
+	_fetch_item_history(item_code, gen) {
+		const p = this._item_panel;
+		delete p.history[item_code];
+		const show = () => { if (p.active === item_code && p.view === "history") this._show_item(item_code); };
+		const failed = () => {
+			if (gen !== this._run_generation || p.history[item_code]) return; // stale, or a retry already succeeded
+			p.history[item_code] = null;
+			show();
+		};
+		const timer = setTimeout(failed, FETCH_TIMEOUT_MS);
+		frappe.call({
+			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_item_history",
+			args: { item: item_code, ...p.args },
+			always: () => clearTimeout(timer),
+			callback: (r) => {
+				if (gen !== this._run_generation) return; // stale — discard
+				if (!r.message) return failed();
+				p.can_see_cost = r.message.can_see_cost !== false;
+				p.history[item_code] = r.message;
+				show();
+			},
+			error: failed,
 		});
+	}
+
+	_retry_html(message) {
+		return `<div class="text-muted" style="padding:20px">${message} <a href="#" class="th-retry">${__("Retry")}</a></div>`;
 	}
 
 	_show_item(item_code) {
@@ -670,6 +687,7 @@ class TransactionHistoryPage {
 
 		const data = p.history[item_code];
 		$content.empty();
+		if (data === null) { $content.html(this._retry_html(__("Could not load item history."))); return; }
 		if (!data) {
 			$content.html(`<div class="text-muted" style="padding:20px">${__("Loading...")}</div>`);
 			return;
@@ -688,11 +706,12 @@ class TransactionHistoryPage {
 		const gen = this._run_generation;
 		const cache = p.card;
 		const from_date = this.controls.item_from.get_value() || null;
-		const fail = () => {
-			if (p.active === item_code && p.view === "card") {
-				$content.html(`<div class="text-muted" style="padding:20px">${__("Could not load the stock card.")}</div>`);
-			}
+		const stale = () => gen !== this._run_generation || cache !== p.card;
+		const fail = (message) => {
+			if (stale() || cache[item_code]) return;
+			if (p.active === item_code && p.view === "card") $content.html(this._retry_html(message));
 		};
+		const timer = setTimeout(() => fail(__("Taking too long.")), FETCH_TIMEOUT_MS);
 		frappe.call({
 			method: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_stock_card",
 			args: {
@@ -702,16 +721,14 @@ class TransactionHistoryPage {
 				to_date: this.controls.item_to.get_value() || null,
 				warehouse: this.controls.item_warehouse.get_value() || null,
 			},
+			always: () => clearTimeout(timer),
 			callback: (r) => {
-				if (gen !== this._run_generation || cache !== p.card) return; // stale
-				if (!r.message) return fail();
+				if (stale()) return;
+				if (!r.message) return fail(__("Could not load the stock card."));
 				cache[item_code] = { data: r.message, from_date };
 				if (p.active === item_code && p.view === "card") this._paint_stock_card(item_code);
 			},
-			error: () => {
-				if (gen !== this._run_generation || cache !== p.card) return; // stale
-				fail();
-			},
+			error: () => fail(__("Could not load the stock card.")),
 		});
 	}
 
@@ -1249,6 +1266,13 @@ class TransactionHistoryPage {
 			else this._render_item_nav();
 		});
 		$(m).on("change", ".item-select", (e) => this._show_item($(e.currentTarget).val()));
+		$(m).on("click", ".th-retry", (e) => {
+			e.preventDefault();
+			const p = this._item_panel;
+			if (!p.active) return;
+			if (p.view === "history") this._fetch_item_history(p.active, this._run_generation);
+			this._show_item(p.active); // card view: _load_stock_card refetches because the cache slot is empty
+		});
 		$(m).on("click", ".item-prev, .item-next", (e) => {
 			const p = this._item_panel;
 			const idx = p.items.findIndex(it => it.item_code === p.active) + ($(e.currentTarget).hasClass("item-next") ? 1 : -1);
