@@ -54,12 +54,18 @@ window.cecypo_reports.bestFit = function (report) {
 		});
 
 		width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, width));
+		// The DataTable instance has no setColumnWidth; the column manager does. Same steps as the
+		// datatable's own resize handle: store the width, then restyle the header and the cells.
 		try {
-			dt.setColumnWidth(colIdx, width);
-		} catch (_e) {
-			// safe to skip hidden/internal columns
+			dt.datamanager.updateColumn(colIdx, { width });
+			dt.columnmanager.setColumnHeaderWidth(colIdx);
+			dt.columnmanager.setColumnWidth(colIdx);
+		} catch (e) {
+			console.warn(`Best Fit: column ${colIdx} skipped`, e); // hidden/internal columns
 		}
 	});
+	dt.style.refreshStickyColumns();
+	dt.style.setBodyStyle();
 
 	document.body.removeChild(measurer);
 };
