@@ -156,6 +156,30 @@ class TestRemarksColumn(unittest.TestCase):
 		self.assertNotIn("remarks", data[0])
 
 
+class TestWalkinCustomerName(unittest.TestCase):
+	def _inv(self, **kw):
+		return frappe._dict(
+			name="SINV-1",
+			posting_date="2026-10-30",
+			customer="Walk-in Customer",
+			customer_name="Walk-in Customer",
+			base_grand_total=100,
+			base_rounded_total=100,
+			outstanding_amount=0,
+			is_return=0,
+			**kw,
+		)
+
+	def test_walkin_name_replaces_customer_name_when_set(self):
+		row = get_data([self._inv(custom_walkin_customer_name="John Kamau")], {}, [])[0]
+		self.assertEqual(row["customer_name"], "John Kamau")
+		self.assertEqual(row["customer"], "Walk-in Customer")
+
+	def test_customer_name_kept_when_walkin_name_empty_or_absent(self):
+		for inv in (self._inv(custom_walkin_customer_name=""), self._inv()):
+			self.assertEqual(get_data([inv], {}, [])[0]["customer_name"], "Walk-in Customer")
+
+
 class TestMpesaColumn(unittest.TestCase):
 	def test_receipts_are_unique_and_comma_separated_per_invoice(self):
 		# POS-00243 on dev: one POS Phone row holds a comma list; a register receipt repeats one

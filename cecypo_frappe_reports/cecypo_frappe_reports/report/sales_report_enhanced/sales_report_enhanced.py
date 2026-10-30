@@ -56,6 +56,10 @@ def get_invoices(filters):
 		.orderby(si.name)
 	)
 
+	# Custom field on sites that record the walk-in buyer's name; absent elsewhere
+	if frappe.get_meta("Sales Invoice").has_field("custom_walkin_customer_name"):
+		query = query.select(si.custom_walkin_customer_name)
+
 	if filters.get("company"):
 		query = query.where(si.company == filters.company)
 
@@ -370,7 +374,7 @@ def get_data(invoices, payment_map, all_modes, include_remarks=False, mpesa_map=
 			"voucher_no": inv.name,
 			"posting_date": inv.posting_date,
 			"customer": inv.customer,
-			"customer_name": inv.customer_name,
+			"customer_name": inv.get("custom_walkin_customer_name") or inv.customer_name,
 			# Outstanding is based on the rounded total; 0 when rounding is disabled
 			"grand_total": flt(inv.base_rounded_total or inv.base_grand_total, 2),
 			"outstanding_amount": flt(get_outstanding(inv), 2),
