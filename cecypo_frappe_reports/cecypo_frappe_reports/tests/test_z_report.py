@@ -1,0 +1,389 @@
+"""The Z-report's figures, checked against what klik files when the shift closes.
+
+Sales go through klik's own invoice builder on a till of the test's own (open_own_shift),
+moved to a warehouse of its own so the day-scope figures see only this test's documents.
+"""
+
+import unittest
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_days, flt, nowdate
+
+from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report
+
+TILL = "_Test Z Till"
+BRANCH = "_Test Z Branch"
+ITEM = "_TEST-Z-ITEM"
+CUSTOMER = "_Test Z Customer"
+EXPENSE_TYPE = "Z Newspaper"
+
+
+def _installed():
+	return "klik_pos" in frappe.get_installed_apps()
+
+
+def _cancel_delete(doctype, names):
+	for name in names:
+		doc = frappe.get_doc(doctype, name)
+		if doc.docstatus == 1:
+			doc.flags.ignore_permissions = True
+			doc.cancel()
+		frappe.delete_doc(doctype, name, force=True, ignore_permissions=True)
+
+
+def _purge():
+	"""Every document the tests make: receipts first, then expenses, then sales (returns first)."""
+	frappe.set_user("Administrator")
+	_cancel_delete("Payment Entry", frappe.get_all("Payment Entry", {"party": CUSTOMER}, pluck="name"))
+	if frappe.db.has_column("Journal Entry", "custom_pos_profile"):
+		_cancel_delete(
+			"Journal Entry", frappe.get_all("Journal Entry", {"custom_pos_profile": TILL}, pluck="name")
+		)
+	_cancel_delete(
+		"Sales Invoice",
+		frappe.get_all(
+			"Sales Invoice", {"customer": CUSTOMER}, pluck="name", order_by="is_return desc, creation desc"
+		),
+	)
+	frappe.db.commit()
+
+
+@unittest.skipUnless(_installed(), "klik_pos is not installed")
+class TestZReport(FrappeTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		from klik_pos.api.mpesa import is_mpesa_mode
+		from klik_pos.api.sales_invoice import get_current_pos_opening_entry
+		from klik_pos.tests.pos_fixtures import open_own_shift, pick_payment_mode
+
+		frappe.set_user("Administrator")
+		profile = open_own_shift(cls, TILL)
+		if not profile:
+			raise unittest.SkipTest("no till to copy")
+		cls.addClassCleanup(cls._drop_masters)
+		cls.addClassCleanup(_purge)  # LIFO: runs before open_own_shift drops the till
+		cls.company = profile.company
+		cls.shift = get_current_pos_opening_entry()
+
+		account_of = {
+			r.parent: r.default_account
+			for r in frappe.get_all(
+				"Mode of Payment Account", {"company": cls.company}, ["parent", "default_account"]
+			)
+			if r.default_account
+		}
+		cls.cash = pick_payment_mode(TILL)
+		cls.other = next(
+			# A typed amount on an M-Pesa mode is refused without a receipt behind it.
+			(
+				p.mode_of_payment
+				for p in profile.payments
+				if p.mode_of_payment != cls.cash
+				and account_of.get(p.mode_of_payment)
+				and not is_mpesa_mode(p.mode_of_payment)
+			),
+			None,
+		)
+		if not (account_of.get(cls.cash) and cls.other):
+			raise unittest.SkipTest("the till needs two modes with accounts")
+		cls.other_account = account_of[cls.other]
+
+		cls.warehouse = cls._ensure_warehouse()
+		cls._ensure_masters()
+		profile = frappe.get_doc("POS Profile", TILL)
+		profile.warehouse = cls.warehouse
+		profile.allow_partial_payment = 1
+		if profile.meta.has_field("custom_expense_account"):
+			profile.custom_expense_account = account_of[cls.cash]
+			profile.custom_expenses_need_approval = 0
+			profile.set(
+				"custom_expense_types",
+				[
+					{
+						"label": EXPENSE_TYPE,
+						"expense_account": frappe.db.get_value(
+							"Account",
+							{"company": cls.company, "root_type": "Expense", "is_group": 0},
+							"name",
+							order_by="name",
+						),
+					}
+				],
+			)
+			profile.applicable_for_users[0].custom_can_record_expenses = 1
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()
+
+	@classmethod
+	def _ensure_warehouse(cls):
+		name = frappe.db.get_value("Warehouse", {"warehouse_name": BRANCH, "company": cls.company})
+		if name:
+			return name
+		return (
+			frappe.get_doc(
+				{
+					"doctype": "Warehouse",
+					"warehouse_name": BRANCH,
+					"company": cls.company,
+					"parent_warehouse": frappe.db.get_value(
+						"Warehouse", {"company": cls.company, "is_group": 1}, "name", order_by="lft"
+					),
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+
+	@classmethod
+	def _ensure_masters(cls):
+		if not frappe.db.exists("Item", ITEM):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": ITEM,
+					"item_name": ITEM,
+					"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+					"stock_uom": "Nos",
+					"is_stock_item": 0,
+					"is_sales_item": 1,
+				}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer", CUSTOMER):
+			frappe.get_doc(
+				{
+					"doctype": "Customer",
+					"customer_name": CUSTOMER,
+					"customer_type": "Individual",
+					"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}, "name"),
+					"territory": frappe.db.get_value("Territory", {"is_group": 0}, "name"),
+				}
+			).insert(ignore_permissions=True)
+
+	@classmethod
+	def _drop_masters(cls):
+		for doctype, name in (("Item", ITEM), ("Customer", CUSTOMER)):
+			if frappe.db.exists(doctype, name):
+				frappe.delete_doc(doctype, name, force=True, ignore_permissions=True)
+		frappe.db.commit()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		self.addCleanup(_purge)
+
+	# ---- helpers ---------------------------------------------------------------------
+
+	def _items(self):
+		return [{"id": ITEM, "item_code": ITEM, "quantity": 1, "price": 100, "uom": "Nos"}]
+
+	def _total(self):
+		from klik_pos.tests.pos_fixtures import payable_total
+
+		return flt(payable_total(CUSTOMER, self._items(), self.cash))
+
+	def _sell(self, payments=None):
+		"""A till sale on the test shift. `payments` is {mode: amount}; default: paid in full in cash."""
+		from klik_pos.api.sales_invoice import build_sales_invoice_doc
+
+		doc = build_sales_invoice_doc(CUSTOMER, self._items(), 0, None, self.cash, "B2C")
+		doc.is_pos = 1
+		doc.set("payments", [])
+		for mode, amount in (payments or {self.cash: self._total()}).items():
+			doc.append("payments", {"mode_of_payment": mode, "amount": amount})
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		frappe.db.commit()
+		return doc
+
+	def _return(self, invoice):
+		from klik_pos.api.sales_invoice import return_sales_invoice
+
+		result = return_sales_invoice(invoice.name)
+		self.assertTrue(result.get("success"), result.get("message"))
+		frappe.db.commit()
+		return result["return_invoice"]
+
+	def _desk_invoice(self, posting_date=None):
+		doc = frappe.new_doc("Sales Invoice")
+		doc.update(
+			{
+				"company": self.company,
+				"customer": CUSTOMER,
+				"posting_date": posting_date or nowdate(),
+				"set_posting_time": 1,
+				"due_date": posting_date or nowdate(),
+				"set_warehouse": self.warehouse,
+			}
+		)
+		doc.append("items", {"item_code": ITEM, "qty": 1, "rate": 100})
+		doc.set_missing_values()
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		frappe.db.commit()
+		return doc
+
+	def _receipt(self, amount, invoice=None, stamp=True):
+		"""A Receive Payment Entry in the other mode, optionally allocated and stamped with the shift."""
+		pe = frappe.new_doc("Payment Entry")
+		pe.update(
+			{
+				"payment_type": "Receive",
+				"party_type": "Customer",
+				"party": CUSTOMER,
+				"company": self.company,
+				"posting_date": nowdate(),
+				"mode_of_payment": self.other,
+				"paid_to": self.other_account,
+				"paid_amount": amount,
+				"received_amount": amount,
+				"reference_no": "Z-TEST",
+				"reference_date": nowdate(),
+			}
+		)
+		if stamp:
+			pe.custom_pos_opening_entry = self.shift
+		if invoice:
+			pe.append(
+				"references",
+				{"reference_doctype": "Sales Invoice", "reference_name": invoice, "allocated_amount": amount},
+			)
+		pe.setup_party_account_field()
+		pe.set_missing_values()
+		pe.insert(ignore_permissions=True)
+		pe.submit()
+		frappe.db.commit()
+		return pe
+
+	def _shift(self):
+		return build_z_report(opening_entry=self.shift)
+
+	def _day(self, date=None):
+		return build_z_report(warehouse=self.warehouse, date=date or nowdate())
+
+	# ---- tests -------------------------------------------------------------------------
+
+	def test_shift_matches_klik_expected(self):
+		from klik_pos.api.pos_entry import expected_by_mode
+
+		total = self._total()
+		self._sell({self.cash: total + 50})  # 50 change
+		returned = self._sell()
+		self._sell({self.other: total})
+		self._return(returned)
+		spent = 0
+		if frappe.get_meta("POS Profile").has_field("custom_expense_account"):
+			from klik_pos.api.expense import record_expense
+
+			spent = 30
+			record_expense(EXPENSE_TYPE, spent)
+
+		klik = expected_by_mode(self.shift)
+		ours = {row["mode"]: row for row in self._shift()["cash_position"]}
+		self.assertEqual(set(ours), set(klik))
+		for mode, row in klik.items():
+			self.assertAlmostEqual(ours[mode]["expected"], flt(row["expected_amount"]), places=2, msg=mode)
+		self.assertAlmostEqual(ours[self.cash]["expected"], total - spent, 2)  # the fixture's float is 0
+
+	def test_returns_listed_not_double_subtracted(self):
+		total = self._total()
+		self._sell()
+		self._return(self._sell())
+
+		report = self._shift()
+		self.assertAlmostEqual(report["tender_total"], total, 2)
+		self.assertEqual(report["returns"]["count"], 1)
+		self.assertAlmostEqual(report["returns"]["total"], -total, 2)
+		self.assertAlmostEqual(
+			report["total_balance"],
+			report["tender_total"] + report["credit_total"] - report["expense_total"],
+			2,
+		)
+		self.assertAlmostEqual(sum(u["total"] for u in report["users"]), report["tender_total"], 2)
+		self.assertEqual(report["sales_count"], 2)
+
+	def test_same_shift_mpesa_receipt_not_in_credit_collected(self):
+		total = self._total()
+		half = flt(total / 2, 2)
+		invoice = self._sell({self.cash: half})
+		self._receipt(flt(total - half, 2), invoice=invoice.name)
+
+		report = self._shift()
+		tenders = {t["mode"]: t["amount"] for t in report["tenders"]}
+		self.assertAlmostEqual(tenders[self.other], total - half, 2)
+		self.assertAlmostEqual(report["tender_total"], total, 2)
+		self.assertEqual(report["credit_total"], 0)
+		self.assertEqual(report["outstanding"], [])
+
+	def test_old_debt_paid_today_is_credit_collected(self):
+		old = self._desk_invoice(posting_date=add_days(nowdate(), -1))
+		amount = flt(old.outstanding_amount)
+		self._receipt(amount, invoice=old.name)
+
+		report = self._shift()
+		self.assertAlmostEqual(report["credit_total"], amount, 2)
+		self.assertEqual(report["credit_collected"], [{"mode": self.other, "amount": amount}])
+		self.assertEqual(report["tender_total"], 0)
+		drawer = {row["mode"]: row for row in report["cash_position"]}
+		self.assertAlmostEqual(drawer[self.other]["expected"], amount, 2)
+
+	def test_day_scope_excludes_unbranched_payment(self):
+		# Excluded entries are company-wide (they have no branch), so measure the change.
+		before = self._day()
+		self._receipt(123, stamp=False)
+
+		after = self._day()
+		self.assertEqual(after["excluded_payment_entries"], before["excluded_payment_entries"] + 1)
+		self.assertEqual(after["credit_total"], before["credit_total"])
+
+	def test_day_scope_includes_desk_invoice_by_set_warehouse(self):
+		invoice = self._desk_invoice()
+
+		report = self._day()
+		self.assertEqual(report["scope"], "day")
+		self.assertEqual(report["sales_count"], 1)
+		self.assertEqual((report["first_doc"], report["last_doc"]), (invoice.name, invoice.name))
+
+	def test_empty_branch(self):
+		report = self._day(date="2026-01-01")
+		self.assertEqual(report["report_no"], f"{self.warehouse} 2026-01-01")
+		self.assertEqual(report["sales_count"], 0)
+		for key in (
+			"users",
+			"tenders",
+			"credit_collected",
+			"taxes",
+			"expenses",
+			"cash_position",
+			"outstanding",
+		):
+			self.assertEqual(report[key], [], key)
+		for key in (
+			"tender_total",
+			"credit_total",
+			"discount_total",
+			"net_total",
+			"tax_total",
+			"grand_total",
+			"expense_total",
+			"total_balance",
+		):
+			self.assertEqual(report[key], 0, key)
+		self.assertEqual(report["returns"], {"count": 0, "modes": [], "total": 0})
+		self.assertIsNone(report["first_doc"])
+
+	def test_outstanding_lists_only_unpaid(self):
+		credit = self._desk_invoice()
+		self._sell()
+
+		outstanding = self._day()["outstanding"]
+		self.assertEqual([row["name"] for row in outstanding], [credit.name])
+		self.assertAlmostEqual(outstanding[0]["outstanding_amount"], flt(credit.outstanding_amount), 2)
+
+	def test_bad_args(self):
+		with self.assertRaises(frappe.ValidationError):
+			build_z_report()
+		with self.assertRaises(frappe.ValidationError):
+			build_z_report(warehouse="X")
+		with self.assertRaises(frappe.ValidationError):
+			build_z_report(opening_entry=self.shift, warehouse="X", date=nowdate())
