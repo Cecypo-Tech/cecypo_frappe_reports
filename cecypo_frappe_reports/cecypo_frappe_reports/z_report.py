@@ -608,7 +608,12 @@ def z_report_escpos(opening_entry: str) -> str:
 	for an unsaved doc dict, so the check is here: only a submitted closing's report, and only for
 	a user who may print that closing (an open shift's expected amounts stay hidden)."""
 	closing = frappe.db.get_value("POS Closing Entry", {"pos_opening_entry": opening_entry, "docstatus": 1})
-	if not closing or not frappe.has_permission("POS Closing Entry", "print", doc=closing):
+	# QZ renders queued jobs as its print agent's API user with ignore_print_permissions set; the
+	# cashier's own print permission was checked when the job was queued (QZ's reprint).
+	if not closing or (
+		not frappe.flags.ignore_print_permissions
+		and not frappe.has_permission("POS Closing Entry", "print", doc=closing)
+	):
 		frappe.throw(_("Not permitted to print this Z-report."), frappe.PermissionError)
 	return render_escpos(build_z_report(opening_entry=opening_entry))
 

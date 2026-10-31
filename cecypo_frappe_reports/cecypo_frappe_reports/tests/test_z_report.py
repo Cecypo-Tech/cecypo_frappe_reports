@@ -601,6 +601,12 @@ class TestZReport(FrappeTestCase):
 
 		with self.assertRaises(frappe.PermissionError):
 			z_report_escpos(self.shift)  # still open: no submitted closing
+		self.addCleanup(
+			setattr, frappe.flags, "ignore_print_permissions", frappe.flags.ignore_print_permissions
+		)
+		frappe.flags.ignore_print_permissions = True
+		with self.assertRaises(frappe.PermissionError):
+			z_report_escpos(self.shift)  # the flag never lifts the submitted-closing rule
 
 
 HEADERS = [
@@ -749,6 +755,13 @@ class TestZReportEscpos(FrappeTestCase):
 		self.assertFalse(frappe.has_permission("POS Closing Entry", "print", doc=closing[0].name))
 		with self.assertRaises(frappe.PermissionError):
 			z_report_escpos(opening)
+
+		# QZ's print agent renders queued jobs with ignore_print_permissions set: allowed.
+		self.addCleanup(
+			setattr, frappe.flags, "ignore_print_permissions", frappe.flags.ignore_print_permissions
+		)
+		frappe.flags.ignore_print_permissions = True
+		self.assertTrue(z_report_escpos(opening).startswith("\x1b@"))
 
 	def test_counted_and_diff_only_when_counted(self):
 		self.assertNotIn("Counted", render_escpos(_report()))
