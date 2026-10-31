@@ -139,9 +139,9 @@ def _day_scope(warehouse, date):
 		if not branched:
 			excluded += 1
 		elif any(r.warehouse == warehouse for r in branched):
-			# Allocations to other branches' invoices are theirs; the unallocated remainder
-			# goes to the branch of the first allocated invoice, so exactly one branch has it.
-			unallocated = flt(pe.paid_amount) - sum(flt(r.allocated_amount) for r in pe.refs)
+			# Allocations to other branches' invoices (or returns, for a refund) are theirs; the
+			# unallocated remainder goes to the first allocated invoice's branch, so one branch has it.
+			unallocated = flt(pe.party_amount) - sum(flt(r.allocated_amount) for r in pe.refs)
 			pe.not_ours = sum(flt(r.allocated_amount) for r in pe.refs if r.warehouse != warehouse)
 			if branched[0].warehouse != warehouse:
 				pe.not_ours += unallocated
@@ -171,10 +171,15 @@ def _invoices(where, params):
 	return frappe.db.sql(
 		f"""
 		SELECT si.name, si.owner, si.is_return, si.posting_date, si.posting_time, si.customer_name,
-			si.grand_total, si.rounded_total, si.outstanding_amount, si.net_total,
-			si.total_taxes_and_charges, si.discount_amount, si.change_amount,
-			si.account_for_change_amount, NULLIF({shift}, '') AS shift
+			si.base_grand_total, si.base_rounded_total, si.outstanding_amount, si.base_net_total,
+			si.base_total_taxes_and_charges, si.base_discount_amount, si.base_write_off_amount,
+			si.change_amount, si.base_change_amount, si.account_for_change_amount,
+			NULLIF({shift}, '') AS shift,
+			-- party_rate turns a party-account amount (outstanding, allocations) into company currency
+			IF(IFNULL(si.party_account_currency, '') IN ('', c.default_currency), 1, si.conversion_rate)
+				AS party_rate
 		FROM `tabSales Invoice` si
+		JOIN `tabCompany` c ON c.name = si.company
 		{BRANCH_JOINS}
 		WHERE si.docstatus = 1 AND {where}
 		ORDER BY si.posting_date, si.posting_time, si.creation
@@ -187,7 +192,8 @@ def _invoices(where, params):
 def _payment_entries(where, params):
 	"""Submitted customer receipts (Receive) and refunds (Pay), each with `refs` (its Sales
 	Invoice allocations, in row order, and their branch) and, when stamped with a shift, that
-	shift's till warehouse."""
+	shift's till warehouse. `party_amount` is the entry in the party account's currency (that of
+	its allocations); `rate` turns it into company currency."""
 	if _has("Payment Entry", "custom_pos_opening_entry"):
 		shift = "NULLIF(pe.custom_pos_opening_entry, '')"
 		join = """LEFT JOIN `tabPOS Opening Entry` poe ON poe.name = pe.custom_pos_opening_entry
@@ -198,6 +204,8 @@ def _payment_entries(where, params):
 	entries = frappe.db.sql(
 		f"""
 		SELECT pe.name, pe.owner, pe.payment_type, pe.mode_of_payment, pe.paid_amount,
+			IF(pe.payment_type = 'Receive', pe.paid_amount, pe.received_amount) AS party_amount,
+			IF(pe.payment_type = 'Receive', pe.base_paid_amount, pe.base_received_amount) AS base_amount,
 			{shift} AS shift, {shift_wh} AS shift_warehouse
 		FROM `tabPayment Entry` pe {join}
 		WHERE pe.payment_type IN ('Receive', 'Pay') AND pe.party_type = 'Customer'
@@ -225,6 +233,7 @@ def _payment_entries(where, params):
 			refs[r.parent].append(r)
 	for e in entries:
 		e.refs = refs[e.name]
+		e.rate = flt(e.base_amount) / flt(e.party_amount) if flt(e.party_amount) else 1
 	return entries
 
 
@@ -356,15 +365,18 @@ def _money(amounts):
 
 
 def _build(scope):
+	"""Every figure in company currency (base_* fields), except the drawer: it keeps the
+	transaction amounts klik's expected_by_mode files, so a shift's Z matches its closing."""
 	invoices, entries = scope["invoices"], scope["payment_entries"]
 	names = tuple(i.name for i in invoices)
 	in_scope = set(names)
 
 	rows_of = defaultdict(list)
-	items_discount, taxes = 0.0, []
+	items_discount, taxes, advances = 0.0, [], []
 	if names:
 		for r in frappe.db.sql(
-			"""SELECT parent, mode_of_payment, amount, type, account, idx FROM `tabSales Invoice Payment`
+			"""SELECT parent, mode_of_payment, amount, base_amount, type, account, idx
+			FROM `tabSales Invoice Payment`
 			WHERE parenttype = 'Sales Invoice' AND parent IN %(names)s ORDER BY parent, idx""",
 			{"names": names},
 			as_dict=True,
@@ -372,16 +384,25 @@ def _build(scope):
 			rows_of[r.parent].append(r)
 		items_discount = flt(
 			frappe.db.sql(
-				"""SELECT SUM(discount_amount * qty) FROM `tabSales Invoice Item`
-				WHERE parenttype = 'Sales Invoice' AND parent IN %(names)s""",
+				"""SELECT SUM(sii.discount_amount * sii.qty * si.conversion_rate)
+				FROM `tabSales Invoice Item` sii JOIN `tabSales Invoice` si ON si.name = sii.parent
+				WHERE sii.parenttype = 'Sales Invoice' AND sii.parent IN %(names)s""",
 				{"names": names},
 			)[0][0]
 		)
 		taxes = frappe.db.sql(
-			"""SELECT MIN(description) AS description, SUM(tax_amount_after_discount_amount) AS amount
+			"""SELECT COALESCE(NULLIF(MIN(description), ''), account_head) AS description,
+				SUM(base_tax_amount_after_discount_amount) AS amount
 			FROM `tabSales Taxes and Charges`
 			WHERE parenttype = 'Sales Invoice' AND parent IN %(names)s
 			GROUP BY account_head ORDER BY MIN(idx), account_head""",
+			{"names": names},
+			as_dict=True,
+		)
+		advances = frappe.db.sql(
+			"""SELECT parent, reference_type, reference_name, allocated_amount
+			FROM `tabSales Invoice Advance`
+			WHERE parenttype = 'Sales Invoice' AND parent IN %(names)s""",
 			{"names": names},
 			as_dict=True,
 		)
@@ -393,49 +414,75 @@ def _build(scope):
 	returns = {"count": 0, "modes": defaultdict(float), "total": 0.0}
 	for inv in invoices:
 		for r in rows_of[inv.name]:
-			lines.append((inv.owner, r.mode_of_payment, flt(r.amount)))
+			lines.append((inv.owner, r.mode_of_payment, flt(r.base_amount)))
 			if inv.shift:
 				if flt(r.amount) >= 0:
 					drawer_in[r.mode_of_payment] += flt(r.amount)
 				else:
 					drawer_out[r.mode_of_payment] -= flt(r.amount)
 			if inv.is_return:
-				returns["modes"][r.mode_of_payment] += flt(r.amount)
+				returns["modes"][r.mode_of_payment] += flt(r.base_amount)
 		if inv.name in change:
 			mode, amount = change[inv.name]
-			lines.append((inv.owner, mode, -amount))
+			lines.append((inv.owner, mode, -flt(inv.base_change_amount)))
 			if inv.shift:
 				drawer_in[mode] -= amount
 		if inv.is_return:
 			returns["count"] += 1
-			returns["total"] += flt(inv.rounded_total or inv.grand_total)
+			returns["total"] += flt(inv.base_rounded_total or inv.base_grand_total)
 
 	credit = defaultdict(float)
 	refunds = defaultdict(float)  # money paid back to customers by Payment Entry, per mode
 	paid_back = 0.0  # the part of those refunds settling returns already in scope
+	settled = defaultdict(dict)  # {invoice: {(doctype, entry): allocated, party currency}}
 	for pe in entries:
 		mode = pe.mode_of_payment or NO_MODE
-		allocated = sum(flt(r.allocated_amount) for r in pe.refs if r.reference_name in in_scope)
+		ours = [r for r in pe.refs if r.reference_name in in_scope]
+		allocated = sum(flt(r.allocated_amount) for r in ours)
+		# not_ours: day scope's share of the entry that belongs to another branch.
+		rest = flt(pe.party_amount) - allocated - flt(pe.get("not_ours"))
 		if pe.payment_type == "Pay":
 			# Listed under returns and off the balance, never in the drawer: klik's
 			# expected_by_mode counts only Receive entries, even when stamped with the shift.
-			refunds[mode] -= flt(pe.paid_amount)
-			paid_back += allocated
+			refunds[mode] -= (allocated + rest) * pe.rate
+			paid_back += allocated * pe.rate
 			continue
+		for r in ours:
+			key = ("Payment Entry", pe.name)
+			settled[r.reference_name][key] = settled[r.reference_name].get(key, 0) + flt(r.allocated_amount)
 		if allocated:
-			lines.append((pe.owner, mode, allocated))
-		# not_ours: day scope's share of the entry that belongs to another branch.
-		rest = flt(pe.paid_amount) - allocated - flt(pe.get("not_ours"))
+			lines.append((pe.owner, mode, allocated * pe.rate))
 		if flt(rest, 2):
-			credit[mode] += rest
+			credit[mode] += rest * pe.rate
 		if pe.shift and pe.mode_of_payment:
 			drawer_in[pe.mode_of_payment] += flt(pe.paid_amount)
+	# Advances settling a sale from outside scope. ERPNext also adds a Payment Entry Reference
+	# row when it allocates an advance, so an entry already counted above is not counted again.
+	for a in advances:
+		key = (a.reference_type, a.reference_name)
+		settled[a.parent].setdefault(key, flt(a.allocated_amount))
 
 	tenders = defaultdict(float)
 	users = {}
 	for user, mode, amount in lines:
 		tenders[mode] += amount
 		users.setdefault(user, defaultdict(float))[mode] += amount
+
+	# On credit: what each sale left unpaid when made, from the invoice itself (not its
+	# outstanding_amount, which later receipts change, so a reprint still agrees).
+	on_credit = defaultdict(float)
+	sales = [i for i in invoices if not i.is_return]
+	for inv in sales:
+		paid = sum(flt(r.base_amount) for r in rows_of[inv.name]) - flt(inv.base_change_amount)
+		unpaid = (
+			flt(inv.base_rounded_total or inv.base_grand_total)
+			- flt(inv.base_write_off_amount)
+			- paid
+			- sum(settled[inv.name].values()) * flt(inv.party_rate)
+		)
+		if flt(unpaid, 2) > 0:
+			on_credit[inv.owner] += unpaid
+			users.setdefault(inv.owner, defaultdict(float))
 
 	cache, expenses = {}, []
 	for e in scope["expenses"]:
@@ -450,6 +497,7 @@ def _build(scope):
 				"note": e["note"],
 				"amount": flt(e["amount"], 2),
 				"user": e["owner"],
+				"user_name": get_fullname(e["owner"]),
 				"pending": e["docstatus"] == 0,
 			}
 		)
@@ -483,7 +531,6 @@ def _build(scope):
 	tender_total = flt(sum(tenders.values()), 2)
 	credit_total = flt(sum(credit.values()), 2)
 	expense_total = flt(sum(e["amount"] for e in expenses), 2)
-	sales = [i for i in invoices if not i.is_return]
 	return {
 		"scope": scope["scope"],
 		"company": scope["company"],
@@ -501,11 +548,15 @@ def _build(scope):
 				"full_name": get_fullname(user),
 				"modes": _money(modes),
 				"total": flt(sum(modes.values()), 2),
+				"on_credit": flt(on_credit.get(user, 0), 2),
 			}
 			for user, modes in users.items()
 		],
 		"tenders": _money(tenders),
 		"tender_total": tender_total,
+		# Neither is money received: shown beside the tenders, kept out of every total.
+		"on_credit_total": flt(sum(on_credit.values()), 2),
+		"written_off_total": flt(sum(flt(i.base_write_off_amount) for i in sales), 2),
 		"credit_collected": _money(credit),
 		"credit_total": credit_total,
 		"returns": {
@@ -514,11 +565,11 @@ def _build(scope):
 			"total": flt(sum(returns["modes"].values()), 2),
 		},
 		"refund_total": refund_total,
-		"discount_total": flt(sum(flt(i.discount_amount) for i in invoices) + items_discount, 2),
+		"discount_total": flt(sum(flt(i.base_discount_amount) for i in invoices) + items_discount, 2),
 		"taxes": [{"description": t.description, "amount": flt(t.amount, 2)} for t in taxes],
-		"net_total": flt(sum(flt(i.net_total) for i in invoices), 2),
-		"tax_total": flt(sum(flt(i.total_taxes_and_charges) for i in invoices), 2),
-		"grand_total": flt(sum(flt(i.grand_total) for i in invoices), 2),
+		"net_total": flt(sum(flt(i.base_net_total) for i in invoices), 2),
+		"tax_total": flt(sum(flt(i.base_total_taxes_and_charges) for i in invoices), 2),
+		"grand_total": flt(sum(flt(i.base_grand_total) for i in invoices), 2),
 		"expenses": expenses,
 		"expense_total": expense_total,
 		"cash_position": cash_position,
@@ -527,8 +578,8 @@ def _build(scope):
 			{
 				"name": i.name,
 				"customer_name": i.customer_name,
-				"grand_total": flt(i.grand_total, 2),
-				"outstanding_amount": flt(i.outstanding_amount, 2),
+				"grand_total": flt(i.base_grand_total, 2),
+				"outstanding_amount": flt(flt(i.outstanding_amount) * flt(i.party_rate), 2),
 			}
 			for i in sales
 			if flt(i.outstanding_amount) > 0
@@ -553,6 +604,12 @@ def _row(left, right, width=42):
 
 
 def z_report_escpos(opening_entry: str) -> str:
+	"""The slip for a closed shift. Called from the Print Format, which Frappe will also render
+	for an unsaved doc dict, so the check is here: only a submitted closing's report, and only for
+	a user who may print that closing (an open shift's expected amounts stay hidden)."""
+	closing = frappe.db.get_value("POS Closing Entry", {"pos_opening_entry": opening_entry, "docstatus": 1})
+	if not closing or not frappe.has_permission("POS Closing Entry", "print", doc=closing):
+		frappe.throw(_("Not permitted to print this Z-report."), frappe.PermissionError)
 	return render_escpos(build_z_report(opening_entry=opening_entry))
 
 
@@ -601,19 +658,26 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 	line(_row(_("Sales"), report.get("sales_count", 0), width))
 	line(hr)
 
+	on_credit = _("On credit (not in totals)")
 	head(_("Sales by user"))
 	for u in report.get("users", []):
 		line(_row(u["full_name"] or u["user"], money(u["total"]), width))
 		for m in u["modes"]:
 			line(_row(f"  {m['mode']}", money(m["amount"]), width))
+		if u.get("on_credit"):
+			line(_row(f"  {on_credit}", money(u["on_credit"]), width))
 	line(hr)
 
 	head(_("Tender types"))
 	pairs(report.get("tenders", []))
 	line(f"{BOLD_ON}{_row(_('Total'), money(report.get('tender_total', 0)), width)}{BOLD_OFF}")
+	if report.get("on_credit_total"):
+		line(_row(on_credit, money(report["on_credit_total"]), width))
+	if report.get("written_off_total"):
+		line(_row(_("Written off"), money(report["written_off_total"]), width))
 	line(hr)
 
-	head(_("Credit payments collected"))
+	head(_("Credit collected / deposits"))
 	pairs(report.get("credit_collected", []))
 	line(_row(_("Total"), money(report.get("credit_total", 0)), width))
 	line(hr)
@@ -626,19 +690,23 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 	line(hr)
 
 	head(_("Discounts"))
-	line(_row(_("Total discount"), money(report.get("discount_total", 0)), width))
+	line(_row(_("Discounts (net of returns)"), money(report.get("discount_total", 0)), width))
 	line(hr)
 
 	head(_("Tax"))
-	line(_row(_("Net total"), money(report.get("net_total", 0)), width))
+	line(_row(_("Taxable total"), money(report.get("net_total", 0)), width))
 	for t in report.get("taxes", []):
-		line(_row(t["description"], money(t["amount"]), width))
+		line(_row(f"  {t['description']}", money(t["amount"]), width))
+	line(_row(_("Tax total"), money(report.get("tax_total", 0)), width))
 	line(_row(_("Grand total"), money(report.get("grand_total", 0)), width))
 	line(hr)
 
 	head(_("Expenses"))
 	for e in report.get("expenses", []):
 		line(_row(e["label"] or e["name"], money(e["amount"]), width))
+		who = ": ".join(x for x in (e.get("user_name") or e.get("user"), e.get("note")) if x)
+		for part in textwrap.wrap(who, width, initial_indent="  ", subsequent_indent="  "):
+			line(part)
 		if e.get("pending"):
 			line(f"  ({_('awaiting approval')})")
 	line(_row(_("Total"), money(report.get("expense_total", 0)), width))

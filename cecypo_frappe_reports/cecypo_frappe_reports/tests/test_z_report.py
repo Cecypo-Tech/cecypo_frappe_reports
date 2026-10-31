@@ -207,8 +207,9 @@ class TestZReport(FrappeTestCase):
 		frappe.db.commit()
 		return result["return_invoice"]
 
-	def _desk_invoice(self, posting_date=None, warehouse=None):
-		"""A desk sale on credit, at the test branch unless `warehouse` says otherwise ("" = none)."""
+	def _desk_invoice(self, posting_date=None, warehouse=None, advances=False):
+		"""A desk sale on credit, at the test branch unless `warehouse` says otherwise ("" = none).
+		`advances`: settle it from the customer's unallocated advances."""
 		doc = frappe.new_doc("Sales Invoice")
 		doc.update(
 			{
@@ -218,6 +219,7 @@ class TestZReport(FrappeTestCase):
 				"set_posting_time": 1,
 				"due_date": posting_date or nowdate(),
 				"set_warehouse": self.warehouse if warehouse is None else warehouse,
+				"allocate_advances_automatically": 1 if advances else 0,
 			}
 		)
 		doc.append("items", {"item_code": ITEM, "qty": 1, "rate": 100})
@@ -227,7 +229,7 @@ class TestZReport(FrappeTestCase):
 		frappe.db.commit()
 		return doc
 
-	def _receipt(self, amount, invoice=None, stamp=True, allocations=None):
+	def _receipt(self, amount, invoice=None, stamp=True, allocations=None, posting_date=None):
 		"""A Receive Payment Entry in the other mode, optionally allocated and stamped with the shift."""
 		pe = frappe.new_doc("Payment Entry")
 		pe.update(
@@ -236,7 +238,7 @@ class TestZReport(FrappeTestCase):
 				"party_type": "Customer",
 				"party": CUSTOMER,
 				"company": self.company,
-				"posting_date": nowdate(),
+				"posting_date": posting_date or nowdate(),
 				"mode_of_payment": self.other,
 				"paid_to": self.other_account,
 				"paid_amount": amount,
@@ -464,12 +466,148 @@ class TestZReport(FrappeTestCase):
 		self.assertAlmostEqual(after["returns"]["total"], -flt(sold.grand_total), 2)
 		self.assertEqual(after["excluded_invoices"], before["excluded_invoices"])
 
+	def test_desk_credit_sale_is_on_credit_not_in_totals(self):
+		invoice = self._desk_invoice()
+		total = flt(invoice.base_rounded_total or invoice.base_grand_total)
+
+		report = self._day()
+		self.assertAlmostEqual(report["on_credit_total"], total, 2)
+		user = {u["user"]: u for u in report["users"]}[invoice.owner]
+		self.assertAlmostEqual(user["on_credit"], total, 2)
+		self.assertEqual(user["total"], 0)
+		self.assertEqual((report["tender_total"], report["total_balance"]), (0, 0))
+		self.assertIn("On credit (not in totals)", render_escpos(report, width=42))
+
+	def test_sale_settled_by_advance_is_not_on_credit(self):
+		# Advance posted yesterday (outside scope) covers the whole sale.
+		self._receipt(1000, stamp=False, posting_date=add_days(nowdate(), -1))
+		self.assertEqual(self._day()["on_credit_total"], 0)  # fixture: nothing sold yet
+		paid = self._desk_invoice(advances=True)
+		self.assertEqual(flt(paid.outstanding_amount), 0, "fixture: settled by the advance")
+		self.assertEqual(self._day()["on_credit_total"], 0)
+
+	def test_partial_advance_today_counted_once(self):
+		# Today's advance appears both as an advance row and as a reference row on the entry.
+		self._receipt(50, stamp=False)
+		invoice = self._desk_invoice(advances=True)
+		total = flt(invoice.base_rounded_total or invoice.base_grand_total)
+		self.assertAlmostEqual(flt(invoice.outstanding_amount), total - 50, 2, "fixture")
+		self.assertAlmostEqual(self._day()["on_credit_total"], total - 50, 2)
+
+	def test_foreign_currency_sale_in_company_currency(self):
+		company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
+		currency = "USD" if company_currency != "USD" else "EUR"
+		doc = frappe.new_doc("Sales Invoice")
+		doc.update(
+			{
+				"company": self.company,
+				"customer": CUSTOMER,
+				"currency": currency,
+				"conversion_rate": 100,
+				"posting_date": nowdate(),
+				"due_date": nowdate(),
+				"set_warehouse": self.warehouse,
+			}
+		)
+		doc.append("items", {"item_code": ITEM, "qty": 1, "rate": 2})
+		doc.set_missing_values()
+		doc.conversion_rate = 100
+		try:
+			doc.insert(ignore_permissions=True)
+		except frappe.ValidationError as e:
+			raise unittest.SkipTest(f"foreign-currency invoice not possible here: {e}") from e
+		doc.submit()
+		frappe.db.commit()
+		self.assertEqual(flt(doc.conversion_rate), 100, "fixture")
+
+		report = self._day()
+		self.assertAlmostEqual(report["grand_total"], flt(doc.base_grand_total), 2)
+		self.assertAlmostEqual(report["net_total"], flt(doc.base_net_total), 2)
+		self.assertAlmostEqual(
+			report["on_credit_total"], flt(doc.base_rounded_total or doc.base_grand_total), 2
+		)
+		self.assertAlmostEqual(report["outstanding"][0]["outstanding_amount"], flt(doc.base_grand_total), 0)
+
+	def test_write_off_is_its_own_line(self):
+		if not frappe.get_cached_value("Company", self.company, "write_off_account"):
+			raise unittest.SkipTest("company has no write-off account")
+		from klik_pos.api.sales_invoice import build_sales_invoice_doc
+
+		total = self._total()
+		doc = build_sales_invoice_doc(CUSTOMER, self._items(), 0, None, self.cash, "B2C")
+		doc.is_pos = 1
+		doc.set("payments", [{"mode_of_payment": self.cash, "amount": total - 10}])
+		doc.write_off_amount = 10
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		frappe.db.commit()
+		self.assertAlmostEqual(flt(doc.write_off_amount), 10, 2, "fixture")
+
+		report = self._shift()
+		self.assertAlmostEqual(report["written_off_total"], 10, 2)
+		self.assertEqual(report["on_credit_total"], 0)
+		self.assertAlmostEqual(report["tender_total"], total - 10, 2)
+
+	def test_refund_split_across_branches_books_each_its_share(self):
+		from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_return
+
+		notes = []
+		for warehouse in (self.warehouse, self.other_warehouse):
+			note = make_sales_return(self._desk_invoice(warehouse=warehouse).name)
+			note.update_outstanding_for_self = 1
+			note.insert(ignore_permissions=True)
+			note.submit()
+			notes.append(note)
+		frappe.db.commit()
+		a, b = (abs(flt(n.outstanding_amount)) for n in notes)
+		pe = frappe.new_doc("Payment Entry")
+		pe.update(
+			{
+				"payment_type": "Pay",
+				"party_type": "Customer",
+				"party": CUSTOMER,
+				"company": self.company,
+				"posting_date": nowdate(),
+				"mode_of_payment": self.other,
+				"paid_from": self.other_account,
+				"paid_amount": a + b + 20,
+				"received_amount": a + b + 20,
+				"reference_no": "Z-SPLIT",
+				"reference_date": nowdate(),
+			}
+		)
+		for note, amount in zip(notes, (a, b), strict=True):
+			pe.append(
+				"references",
+				{
+					"reference_doctype": "Sales Invoice",
+					"reference_name": note.name,
+					"allocated_amount": -amount,
+				},
+			)
+		pe.setup_party_account_field()
+		pe.set_missing_values()
+		pe.insert(ignore_permissions=True)
+		pe.submit()
+		frappe.db.commit()
+
+		ours = self._day()
+		theirs = build_z_report(warehouse=self.other_warehouse, date=nowdate())
+		self.assertAlmostEqual(ours["refund_total"], a + 20, 2)  # the remainder: first allocated branch
+		self.assertAlmostEqual(theirs["refund_total"], b, 2)
+
+	def test_escpos_refused_without_closing_or_print_permission(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import z_report_escpos
+
+		with self.assertRaises(frappe.PermissionError):
+			z_report_escpos(self.shift)  # still open: no submitted closing
+
 
 HEADERS = [
 	"Z REPORT",
 	"Sales by user",
 	"Tender types",
-	"Credit payments collected",
+	"Credit collected / deposits",
 	"Returns",
 	"Discounts",
 	"Tax",
@@ -516,6 +654,7 @@ def _report(**over):
 				"note": "",
 				"amount": 20.0,
 				"user": "a@x.com",
+				"user_name": "Amina",
 				"pending": True,
 			}
 		],
@@ -550,7 +689,12 @@ class TestZReportEscpos(FrappeTestCase):
 				cash_position=cp,
 				excluded_invoices=2,
 				excluded_payment_entries=1,
-			)
+				expenses=[dict(_report()["expenses"][0], note="paid the vendor " * 6)],
+				users=[dict(_report()["users"][0], on_credit=123456789.0)],
+				on_credit_total=123456789.0,
+				written_off_total=5.0,
+			),
+			width=42,
 		)
 		self.assertTrue(out.startswith("\x1b@\x1c\x2e\x1b\x74\x00"))
 		self.assertTrue(out.endswith("\x1b\x64\x04\x1d\x56\x00"))
@@ -569,6 +713,42 @@ class TestZReportEscpos(FrappeTestCase):
 
 	def test_pending_expense(self):
 		self.assertIn("(awaiting approval)", render_escpos(_report()))
+
+	def test_expense_shows_who_and_note(self):
+		out = render_escpos(_report(expenses=[dict(_report()["expenses"][0], note="for the shop")]), width=42)
+		self.assertIn("  Amina: for the shop", out)
+
+	def test_tax_total_and_labels(self):
+		out = render_escpos(_report(), width=42)
+		self.assertIn("Tax total", out)
+		self.assertIn("Discounts (net of returns)", out)
+		self.assertNotIn("On credit", out)  # zero: not printed
+		self.assertNotIn("Written off", out)
+		out = render_escpos(_report(on_credit_total=40.0, written_off_total=5.0), width=42)
+		self.assertIn("On credit (not in totals)", out)
+		self.assertIn("Written off", out)
+
+	def test_escpos_needs_print_permission_on_the_closing(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import z_report_escpos
+
+		closing = frappe.get_all(
+			"POS Closing Entry", {"docstatus": 1}, ["name", "pos_opening_entry"], limit=1
+		)
+		if not closing:
+			raise unittest.SkipTest("no submitted POS Closing Entry on this site")
+		opening = closing[0].pos_opening_entry
+		frappe.set_user("Administrator")
+		self.assertTrue(z_report_escpos(opening).startswith("\x1b@"))
+		email = "z-report-noprint@example.com"
+		self.addCleanup(TestZReportPage._drop_user, email)
+		user = frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "ZNoPrint", "send_welcome_email": 0}
+		).insert(ignore_permissions=True)
+		user.add_roles("Sales User")
+		frappe.set_user(email)
+		self.assertFalse(frappe.has_permission("POS Closing Entry", "print", doc=closing[0].name))
+		with self.assertRaises(frappe.PermissionError):
+			z_report_escpos(opening)
 
 	def test_counted_and_diff_only_when_counted(self):
 		self.assertNotIn("Counted", render_escpos(_report()))
@@ -625,6 +805,10 @@ class TestZReportPage(FrappeTestCase):
 		self.assertNotIn("Not counted", out)
 		self.assertNotIn("Counted", out)
 		self.assertIn("awaiting approval", out)
+		self.assertIn("<td>Amina</td>", out)  # who took the expense
+		self.assertIn("Tax total", out)
+		self.assertIn("Discounts (net of returns)", out)
+		self.assertNotIn("On credit", out)
 		at = [out.index(h) for h in HEADERS]
 		self.assertEqual(at, sorted(at))
 
@@ -717,6 +901,35 @@ class TestZReportPage(FrappeTestCase):
 		self.assertEqual(get_default_warehouse(), a)
 		self._user("z-report-two@example.com", ["Accounts User"], [a, b])
 		self.assertIsNone(get_default_warehouse())
+
+	def test_default_warehouse_falls_back_to_users_till(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import (
+			get_default_warehouse,
+		)
+
+		profile = frappe.get_all(
+			"POS Profile", {"disabled": 0, "warehouse": ("is", "set")}, ["name", "warehouse"], limit=1
+		)
+		if not profile:
+			raise unittest.SkipTest("no POS Profile with a warehouse")
+		email = "z-report-till@example.com"
+		self._user(email, ["Accounts User"])
+		frappe.set_user("Administrator")
+		row = frappe.get_doc(
+			{
+				"doctype": "POS Profile User",
+				"parent": profile[0].name,
+				"parenttype": "POS Profile",
+				"parentfield": "applicable_for_users",
+				"user": email,
+				"idx": 999,
+			}
+		)
+		row.db_insert()
+		self.addCleanup(frappe.db.commit)
+		self.addCleanup(frappe.db.delete, "POS Profile User", {"name": row.name})
+		frappe.set_user(email)
+		self.assertEqual(get_default_warehouse(), profile[0].warehouse)
 
 	def test_accounts_manager_needs_no_warehouse_read(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import get_z_report

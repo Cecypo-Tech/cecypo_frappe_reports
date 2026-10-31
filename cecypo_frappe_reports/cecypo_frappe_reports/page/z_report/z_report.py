@@ -19,9 +19,21 @@ def get_z_report_html(warehouse: str, date: str) -> str:
 
 @frappe.whitelist()
 def get_default_warehouse() -> str | None:
-	"""The user's only permitted Warehouse, else None."""
+	"""The user's only permitted Warehouse, else the warehouse of a till they work on (first
+	POS Profile by name that lists them), else None."""
 	allowed = _permitted_warehouses()
-	return next(iter(allowed)) if len(allowed) == 1 else None
+	if len(allowed) == 1:
+		return next(iter(allowed))
+	for w in frappe.db.sql_list(
+		"""SELECT pp.warehouse FROM `tabPOS Profile` pp
+		JOIN `tabPOS Profile User` u ON u.parent = pp.name AND u.parenttype = 'POS Profile'
+		WHERE u.user = %s AND pp.disabled = 0 AND IFNULL(pp.warehouse, '') != ''
+		ORDER BY pp.name""",
+		frappe.session.user,
+	):
+		if not allowed or w in allowed:
+			return w
+	return None
 
 
 @frappe.whitelist()

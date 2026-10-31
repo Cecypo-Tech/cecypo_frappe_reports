@@ -44,6 +44,9 @@
 		{%- for m in u.modes %}
 		<tr><td class="ind">{{ m.mode }}</td><td class="r">{{ money(m.amount) }}</td></tr>
 		{%- endfor %}
+		{%- if u.on_credit %}
+		<tr><td class="ind"><i>{{ _("On credit (not in totals)") }}</i></td><td class="r"><i>{{ money(u.on_credit) }}</i></td></tr>
+		{%- endif %}
 		{%- endfor %}
 	</table>
 
@@ -53,9 +56,15 @@
 		<tr><td>{{ t.mode }}</td><td class="r">{{ money(t.amount) }}</td></tr>
 		{%- endfor %}
 		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.tender_total) }}</td></tr>
+		{%- if R.on_credit_total %}
+		<tr><td><i>{{ _("On credit (not in totals)") }}</i></td><td class="r"><i>{{ money(R.on_credit_total) }}</i></td></tr>
+		{%- endif %}
+		{%- if R.written_off_total %}
+		<tr><td><i>{{ _("Written off") }}</i></td><td class="r"><i>{{ money(R.written_off_total) }}</i></td></tr>
+		{%- endif %}
 	</table>
 
-	<h3>{{ _("Credit payments collected") }}</h3>
+	<h3>{{ _("Credit collected / deposits") }}</h3>
 	<table>
 		{%- for t in R.credit_collected %}
 		<tr><td>{{ t.mode }}</td><td class="r">{{ money(t.amount) }}</td></tr>
@@ -74,27 +83,31 @@
 
 	<h3>{{ _("Discounts") }}</h3>
 	<table>
-		<tr><td>{{ _("Total discount") }}</td><td class="r">{{ money(R.discount_total) }}</td></tr>
+		<tr><td>{{ _("Discounts (net of returns)") }}</td><td class="r">{{ money(R.discount_total) }}</td></tr>
 	</table>
 
 	<h3>{{ _("Tax") }}</h3>
 	<table>
-		<tr><td>{{ _("Net total") }}</td><td class="r">{{ money(R.net_total) }}</td></tr>
+		<tr><td>{{ _("Taxable total") }}</td><td class="r">{{ money(R.net_total) }}</td></tr>
 		{%- for t in R.taxes %}
-		<tr><td>{{ t.description }}</td><td class="r">{{ money(t.amount) }}</td></tr>
+		<tr><td class="ind">{{ t.description }}</td><td class="r">{{ money(t.amount) }}</td></tr>
 		{%- endfor %}
+		<tr><td>{{ _("Tax total") }}</td><td class="r">{{ money(R.tax_total) }}</td></tr>
 		<tr class="tot"><td>{{ _("Grand total") }}</td><td class="r">{{ money(R.grand_total) }}</td></tr>
 	</table>
 
 	<h3>{{ _("Expenses") }}</h3>
 	<table>
+		<tr><th>{{ _("Expense") }}</th><th>{{ _("By") }}</th><th>{{ _("Note") }}</th><th class="r">{{ _("Amount") }}</th></tr>
 		{%- for e in R.expenses %}
 		<tr>
-			<td>{{ e.label or e.name }}{% if e.note %}: {{ e.note }}{% endif %}{% if e.pending %} <i>({{ _("awaiting approval") }})</i>{% endif %}</td>
+			<td>{{ e.label or e.name }}{% if e.pending %} <i>({{ _("awaiting approval") }})</i>{% endif %}</td>
+			<td>{{ e.user_name or e.user }}</td>
+			<td>{{ e.note or "" }}</td>
 			<td class="r">{{ money(e.amount) }}</td>
 		</tr>
 		{%- endfor %}
-		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.expense_total) }}</td></tr>
+		<tr class="tot"><td colspan="3">{{ _("Total") }}</td><td class="r">{{ money(R.expense_total) }}</td></tr>
 	</table>
 
 	<h3>{{ _("Cash position") }}</h3>
