@@ -542,11 +542,23 @@ def _report(**over):
 
 class TestZReportEscpos(FrappeTestCase):
 	def test_frame_and_width(self):
-		out = render_escpos(_report(company="A Rather Long Company Name Trading Limited"))
+		cp = [dict(_report()["cash_position"][0], mode="M" * 50)]
+		out = render_escpos(
+			_report(
+				company="A Rather Long Company Name Trading Limited",
+				warehouse="Warehouse " * 6,
+				cash_position=cp,
+				excluded_invoices=2,
+				excluded_payment_entries=1,
+			)
+		)
 		self.assertTrue(out.startswith("\x1b@\x1c\x2e\x1b\x74\x00"))
 		self.assertTrue(out.endswith("\x1b\x64\x04\x1d\x56\x00"))
 		for ln in out.split("\n"):
-			self.assertLessEqual(len(re.sub(r"\x1b@|\x1b[atdE].|\x1d..|\x1c.", "", ln)), 42, ln)
+			text = re.sub(r"\x1b@|\x1b[atdE].|\x1d..|\x1c.", "", ln)
+			self.assertLessEqual(len(text), 42, ln)
+			if "\x1d\x21\x10" in ln:
+				self.assertLessEqual(len(text), 21, ln)
 		self.assertNotIn("\x1d\x21\x01", out)
 		self.assertNotIn("\x1d\x21\x11", out)
 

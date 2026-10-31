@@ -577,8 +577,8 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 	out.append(CENTER)
 	for part in textwrap.wrap(company or "", width // 2) or [""]:
 		line(f"{DBLW}{part}{NORMAL}")
-	if report.get("warehouse"):
-		line(report["warehouse"])
+	for part in textwrap.wrap(report.get("warehouse") or "", width):
+		line(part)
 	line(f"{BOLD_ON}{_('Z REPORT')}{BOLD_OFF}")
 	out.append(LEFT)
 	line(hr)
@@ -637,7 +637,7 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 
 	head(_("Cash position"))
 	for c in report.get("cash_position", []):
-		line(c["mode"])
+		line(c["mode"][:width])
 		for label, key in (("Opening", "opening"), ("In", "in"), ("Out", "out"), ("Expected", "expected")):
 			line(_row(f"  {_(label)}", money(c[key]), width))
 		if c["counted"] is not None:
@@ -647,10 +647,10 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 
 	line(f"{BOLD_ON}{_row(_('Total balance'), money(report.get('total_balance', 0)), width)}{BOLD_OFF}")
 	if report.get("excluded_invoices") or report.get("excluded_payment_entries"):
-		line(
-			_("Not counted: {0} invoices, {1} payments (no branch)").format(
-				report.get("excluded_invoices", 0), report.get("excluded_payment_entries", 0)
-			)
+		text = _("Not counted: {0} invoices, {1} payments (no branch)").format(
+			report.get("excluded_invoices", 0), report.get("excluded_payment_entries", 0)
 		)
+		for part in textwrap.wrap(text, width):
+			line(part)
 	out.append(CUT)
 	return "".join(out)
