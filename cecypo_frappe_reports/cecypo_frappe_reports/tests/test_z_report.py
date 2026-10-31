@@ -602,3 +602,73 @@ class TestZReportEscpos(FrappeTestCase):
 		)
 		for h in HEADERS:
 			self.assertIn(h, out)
+
+
+class TestZReportPage(FrappeTestCase):
+	def test_html_shows_the_figures(self):
+		from unittest import mock
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_z_report_html
+
+		def html(report):
+			with mock.patch(
+				"cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report.get_z_report",
+				return_value=report,
+			):
+				return get_z_report_html("Main Branch", "2026-10-31")
+
+		out = html(_report())
+		self.assertIn("Main Branch", out)
+		self.assertIn("Z REPORT", out)
+		self.assertIn("900.00", out)
+		self.assertNotIn("Outstanding invoices", out)
+		self.assertNotIn("Not counted", out)
+		self.assertNotIn("Counted", out)
+		self.assertIn("awaiting approval", out)
+		at = [out.index(h) for h in HEADERS]
+		self.assertEqual(at, sorted(at))
+
+		out = html(
+			_report(
+				excluded_invoices=2,
+				outstanding=[
+					{
+						"name": "SINV-7",
+						"customer_name": "Zed",
+						"grand_total": 50.0,
+						"outstanding_amount": 20.0,
+					}
+				],
+				cash_position=[dict(_report()["cash_position"][0], counted=970.0, difference=-10.0)],
+			)
+		)
+		self.assertIn("Outstanding invoices", out)
+		self.assertIn("SINV-7", out)
+		self.assertIn("Not counted", out)
+		self.assertIn("Counted", out)
+
+	def test_other_warehouse_is_refused(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_z_report_html
+
+		a, b = frappe.get_all("Warehouse", {"is_group": 0}, pluck="name", limit=2)
+		email = "z-report-perm@example.com"
+		frappe.set_user("Administrator")
+		self.addCleanup(self._drop_user, email)
+		user = frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "ZPerm", "send_welcome_email": 0}
+		).insert(ignore_permissions=True)
+		user.add_roles("Accounts User")
+		frappe.get_doc(
+			{"doctype": "User Permission", "user": email, "allow": "Warehouse", "for_value": a}
+		).insert(ignore_permissions=True)
+		frappe.set_user(email)
+		with self.assertRaises(frappe.PermissionError):
+			get_z_report_html(b, nowdate())
+
+	@staticmethod
+	def _drop_user(email):
+		frappe.set_user("Administrator")
+		for p in frappe.get_all("User Permission", {"user": email}, pluck="name"):
+			frappe.delete_doc("User Permission", p, force=True, ignore_permissions=True)
+		frappe.delete_doc("User", email, force=True, ignore_permissions=True)
+		frappe.db.commit()

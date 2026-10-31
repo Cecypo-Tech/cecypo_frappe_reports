@@ -1,0 +1,135 @@
+{%- macro money(amount) -%}{{ frappe.utils.fmt_money(amount, currency=currency) }}{%- endmacro -%}
+<style>
+	.z-a4 { font-size: 12px; max-width: 190mm; margin: 0 auto; color: #000; }
+	.z-a4 h2, .z-a4 h3 { margin: 0; }
+	.z-a4 h2 { text-align: center; font-size: 18px; }
+	.z-a4 .z-sub { text-align: center; margin-bottom: 8px; }
+	.z-a4 h3 { font-size: 13px; margin: 12px 0 4px; border-bottom: 1px solid #000; }
+	.z-a4 table { width: 100%; border-collapse: collapse; }
+	.z-a4 td, .z-a4 th { padding: 2px 4px; }
+	.z-a4 th { text-align: left; border-bottom: 1px solid #999; }
+	.z-a4 .r { text-align: right; }
+	.z-a4 .tot td { font-weight: bold; border-top: 1px solid #999; }
+	.z-a4 .ind { padding-left: 16px; }
+	@media print {
+		@page { size: A4; margin: 12mm; }
+		.navbar, .page-head, .layout-side-section, .sidebar-section, .page-actions, footer { display: none !important; }
+		body, .layout-main-section, .page-body, .container { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+		.z-a4 { max-width: none; }
+	}
+</style>
+{%- set R = report -%}
+<div class="z-a4">
+	<h2>{{ R.company }}</h2>
+	<div class="z-sub"><b>{{ R.warehouse }}</b><br><b>{{ _("Z REPORT") }}</b></div>
+	<table>
+		<tr><td>{{ _("Report") }}</td><td class="r">{{ R.report_no }}</td></tr>
+		<tr><td>{{ _("From") }}</td><td class="r">{{ (R.period_start or "")[:16] }}</td></tr>
+		<tr><td>{{ _("To") }}</td><td class="r">{{ (R.period_end or "")[:16] }}</td></tr>
+		<tr><td>{{ _("Printed") }}</td><td class="r">{{ (R.printed_at or "")[:16] }}</td></tr>
+		{%- if R.first_doc %}
+		<tr><td>{{ _("First invoice") }}</td><td class="r">{{ R.first_doc }}</td></tr>
+		<tr><td>{{ _("Last invoice") }}</td><td class="r">{{ R.last_doc }}</td></tr>
+		{%- endif %}
+		<tr><td>{{ _("Sales") }}</td><td class="r">{{ R.sales_count }}</td></tr>
+	</table>
+
+	<h3>{{ _("Sales by user") }}</h3>
+	<table>
+		{%- for u in R.users %}
+		<tr><td><b>{{ u.full_name or u.user }}</b></td><td class="r"><b>{{ money(u.total) }}</b></td></tr>
+		{%- for m in u.modes %}
+		<tr><td class="ind">{{ m.mode }}</td><td class="r">{{ money(m.amount) }}</td></tr>
+		{%- endfor %}
+		{%- endfor %}
+	</table>
+
+	<h3>{{ _("Tender types") }}</h3>
+	<table>
+		{%- for t in R.tenders %}
+		<tr><td>{{ t.mode }}</td><td class="r">{{ money(t.amount) }}</td></tr>
+		{%- endfor %}
+		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.tender_total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Credit payments collected") }}</h3>
+	<table>
+		{%- for t in R.credit_collected %}
+		<tr><td>{{ t.mode }}</td><td class="r">{{ money(t.amount) }}</td></tr>
+		{%- endfor %}
+		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.credit_total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Returns") }}</h3>
+	<table>
+		<tr><td>{{ _("Count") }}</td><td class="r">{{ R.returns.count }}</td></tr>
+		{%- for t in R.returns.modes %}
+		<tr><td>{{ t.mode }}</td><td class="r">{{ money(t.amount) }}</td></tr>
+		{%- endfor %}
+		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.returns.total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Discounts") }}</h3>
+	<table>
+		<tr><td>{{ _("Total discount") }}</td><td class="r">{{ money(R.discount_total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Tax") }}</h3>
+	<table>
+		<tr><td>{{ _("Net total") }}</td><td class="r">{{ money(R.net_total) }}</td></tr>
+		{%- for t in R.taxes %}
+		<tr><td>{{ t.description }}</td><td class="r">{{ money(t.amount) }}</td></tr>
+		{%- endfor %}
+		<tr class="tot"><td>{{ _("Grand total") }}</td><td class="r">{{ money(R.grand_total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Expenses") }}</h3>
+	<table>
+		{%- for e in R.expenses %}
+		<tr>
+			<td>{{ e.label or e.name }}{% if e.note %}: {{ e.note }}{% endif %}{% if e.pending %} <i>({{ _("awaiting approval") }})</i>{% endif %}</td>
+			<td class="r">{{ money(e.amount) }}</td>
+		</tr>
+		{%- endfor %}
+		<tr class="tot"><td>{{ _("Total") }}</td><td class="r">{{ money(R.expense_total) }}</td></tr>
+	</table>
+
+	<h3>{{ _("Cash position") }}</h3>
+	{%- set ns = namespace(counted=false) %}
+	{%- for c in R.cash_position %}{% if c.counted is not none %}{% set ns.counted = true %}{% endif %}{% endfor %}
+	<table>
+		<tr>
+			<th>{{ _("Mode") }}</th><th class="r">{{ _("Opening") }}</th><th class="r">{{ _("In") }}</th>
+			<th class="r">{{ _("Out") }}</th><th class="r">{{ _("Expected") }}</th>
+			{%- if ns.counted %}<th class="r">{{ _("Counted") }}</th><th class="r">{{ _("Diff") }}</th>{% endif %}
+		</tr>
+		{%- for c in R.cash_position %}
+		<tr>
+			<td>{{ c.mode }}</td><td class="r">{{ money(c.opening) }}</td><td class="r">{{ money(c["in"]) }}</td>
+			<td class="r">{{ money(c.out) }}</td><td class="r">{{ money(c.expected) }}</td>
+			{%- if ns.counted %}
+			<td class="r">{% if c.counted is not none %}{{ money(c.counted) }}{% endif %}</td>
+			<td class="r">{% if c.counted is not none %}{{ money(c.difference) }}{% endif %}</td>
+			{%- endif %}
+		</tr>
+		{%- endfor %}
+	</table>
+
+	<table style="margin-top: 10px; font-size: 15px;">
+		<tr class="tot"><td>{{ _("Total balance") }}</td><td class="r">{{ money(R.total_balance) }}</td></tr>
+	</table>
+
+	{%- if R.outstanding %}
+	<h3>{{ _("Outstanding invoices") }}</h3>
+	<table>
+		<tr><th>{{ _("Invoice") }}</th><th>{{ _("Customer") }}</th><th class="r">{{ _("Grand total") }}</th><th class="r">{{ _("Outstanding") }}</th></tr>
+		{%- for i in R.outstanding %}
+		<tr><td>{{ i.name }}</td><td>{{ i.customer_name }}</td><td class="r">{{ money(i.grand_total) }}</td><td class="r">{{ money(i.outstanding_amount) }}</td></tr>
+		{%- endfor %}
+	</table>
+	{%- endif %}
+
+	{%- if R.excluded_invoices or R.excluded_payment_entries %}
+	<p style="margin-top: 10px;"><i>{{ _("Not counted: {0} invoices, {1} payments (no branch)").format(R.excluded_invoices or 0, R.excluded_payment_entries or 0) }}</i></p>
+	{%- endif %}
+</div>

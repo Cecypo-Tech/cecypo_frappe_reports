@@ -1,0 +1,22 @@
+{
+ "content": null,
+ "creation": "2026-10-31 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-10-31 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cecypo Frappe Reports",
+ "name": "z-report",
+ "owner": "Administrator",
+ "page_name": "z-report",
+ "restrict_to_domain": "",
+ "roles": [
+  {"role": "Accounts Manager"},
+  {"role": "Accounts User"},
+  {"role": "System Manager"}
+ ],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Z Report"
+}
