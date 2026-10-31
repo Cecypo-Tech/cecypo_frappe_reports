@@ -10,8 +10,7 @@ frappe.pages["z-report"].on_page_load = function (wrapper) {
 	const warehouse = page.add_field({
 		fieldname: "warehouse",
 		label: __("Warehouse"),
-		fieldtype: "Link",
-		options: "Warehouse",
+		fieldtype: "Select", // a Link would need Warehouse read, which Accounts roles lack
 		change: () => refresh(),
 	});
 	const date = page.add_field({
@@ -41,10 +40,13 @@ frappe.pages["z-report"].on_page_load = function (wrapper) {
 	page.set_primary_action(__("Refresh"), refresh);
 	page.add_button(__("Print"), () => window.print());
 
-	frappe.xcall(
-		"cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report.get_default_warehouse"
-	).then((w) => {
-		if (w) warehouse.set_value(w);
-		else refresh();
-	});
+	const api = "cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report.";
+	Promise.all([frappe.xcall(api + "get_branch_options"), frappe.xcall(api + "get_default_warehouse")]).then(
+		([options, w]) => {
+			warehouse.df.options = ["", ...options].join("\n");
+			warehouse.refresh();
+			if (w) warehouse.set_value(w);
+			else refresh();
+		}
+	);
 };

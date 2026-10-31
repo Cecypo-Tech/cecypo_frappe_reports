@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 
 from cecypo_frappe_reports.cecypo_frappe_reports.z_report import _permitted_warehouses, get_z_report
 
@@ -21,3 +22,15 @@ def get_default_warehouse() -> str | None:
 	"""The user's only permitted Warehouse, else None."""
 	allowed = _permitted_warehouses()
 	return next(iter(allowed)) if len(allowed) == 1 else None
+
+
+@frappe.whitelist()
+def get_branch_options() -> list[str]:
+	"""Warehouses the user may report on. Read straight from the DB: Accounts roles lack Warehouse read."""
+	if not frappe.has_permission("Sales Invoice", "report"):
+		frappe.throw(_("Not permitted to view sales reports."), frappe.PermissionError)
+	allowed = _permitted_warehouses()
+	rows = frappe.get_all(
+		"Warehouse", {"is_group": 0, "disabled": 0}, pluck="name", order_by="name", ignore_permissions=True
+	)
+	return [w for w in rows if not allowed or w in allowed]

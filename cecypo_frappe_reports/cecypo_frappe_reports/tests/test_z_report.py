@@ -726,6 +726,19 @@ class TestZReportPage(FrappeTestCase):
 		self.assertFalse(frappe.has_permission("Warehouse", doc=w))
 		self.assertEqual(get_z_report(w, nowdate())["warehouse"], w)
 
+	def test_branch_options(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_branch_options
+
+		a = frappe.get_all("Warehouse", {"is_group": 0, "disabled": 0}, pluck="name", limit=1)[0]
+		self._user("z-report-opt-am@example.com", ["Accounts Manager"])
+		self.assertFalse(frappe.has_permission("Warehouse", "read"))
+		self.assertIn(a, get_branch_options())
+		self._user("z-report-opt-a@example.com", ["Accounts User"], [a])
+		self.assertEqual(get_branch_options(), [a])
+		self._user("z-report-opt-none@example.com", ["Desk User"])
+		with self.assertRaises(frappe.PermissionError):
+			get_branch_options()
+
 	@staticmethod
 	def _drop_user(email):
 		frappe.set_user("Administrator")
