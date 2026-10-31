@@ -13,8 +13,16 @@ from frappe import _
 from frappe.utils import add_days, flt, get_fullname, getdate, now_datetime
 
 NO_MODE = "(no mode)"
-# An invoice's branch: its till's warehouse, else the desk invoice's set_warehouse.
-BRANCH_SQL = "COALESCE(NULLIF(pp.warehouse, ''), si.set_warehouse)"
+# An invoice's branch: its till's warehouse, else the desk invoice's set_warehouse; a return
+# with neither (desk "Make Return" does not copy set_warehouse) takes its original's by the same rule.
+# Every query using BRANCH_SQL aliases the invoice `si` and includes BRANCH_JOINS.
+BRANCH_SQL = (
+	"COALESCE(NULLIF(pp.warehouse, ''), NULLIF(si.set_warehouse, ''),"
+	" NULLIF(opp.warehouse, ''), NULLIF(osi.set_warehouse, ''))"
+)
+BRANCH_JOINS = """LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
+	LEFT JOIN `tabSales Invoice` osi ON si.is_return = 1 AND osi.name = si.return_against
+	LEFT JOIN `tabPOS Profile` opp ON opp.name = osi.pos_profile"""
 
 
 @frappe.whitelist()
@@ -103,8 +111,8 @@ def _day_scope(warehouse, date):
 	# Invoices with no branch at all (no till warehouse, no set_warehouse): counted, not lost.
 	excluded_invoices = frappe.db.sql(
 		f"""SELECT COUNT(*) FROM `tabSales Invoice` si
-		LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
-		WHERE si.docstatus = 1 AND {day} AND IFNULL({BRANCH_SQL}, '') = ''""",
+		{BRANCH_JOINS}
+		WHERE si.docstatus = 1 AND {day} AND {BRANCH_SQL} IS NULL""",
 		params,
 	)[0][0]
 	entries, excluded = [], 0
@@ -157,7 +165,7 @@ def _invoices(where, params):
 			si.total_taxes_and_charges, si.discount_amount, si.change_amount,
 			si.account_for_change_amount, NULLIF({shift}, '') AS shift
 		FROM `tabSales Invoice` si
-		LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
+		{BRANCH_JOINS}
 		WHERE si.docstatus = 1 AND {where}
 		ORDER BY si.posting_date, si.posting_time, si.creation
 		""",
@@ -197,7 +205,7 @@ def _payment_entries(where, params):
 				{BRANCH_SQL} AS warehouse
 			FROM `tabPayment Entry Reference` per
 			JOIN `tabSales Invoice` si ON si.name = per.reference_name
-			LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
+			{BRANCH_JOINS}
 			WHERE per.reference_doctype = 'Sales Invoice' AND per.parent IN %(names)s
 			ORDER BY per.parent, per.idx
 			""",

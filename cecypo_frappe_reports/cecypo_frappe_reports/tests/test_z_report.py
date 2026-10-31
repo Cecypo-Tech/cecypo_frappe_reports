@@ -397,7 +397,7 @@ class TestZReport(FrappeTestCase):
 
 		credit_note = make_sales_return(self._desk_invoice().name)
 		credit_note.update_outstanding_for_self = 1
-		credit_note.set_warehouse = self.warehouse  # make_sales_return does not carry it over
+		credit_note.set_warehouse = None  # its branch comes from the invoice it returns
 		credit_note.insert(ignore_permissions=True)
 		credit_note.submit()
 		frappe.db.commit()
@@ -446,3 +446,19 @@ class TestZReport(FrappeTestCase):
 		self._receipt(77)  # stamped with a shift whose till has no warehouse
 		self.assertEqual(self._day()["excluded_payment_entries"], before["excluded_payment_entries"] + 1)
 		self.assertEqual(self._shift()["excluded_invoices"], 0)
+
+	def test_desk_return_without_warehouse_takes_its_original_branch(self):
+		from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_return
+
+		sold = self._desk_invoice()
+		before = self._day()
+		credit_note = make_sales_return(sold.name)
+		credit_note.set_warehouse = None  # as desk "Make Return" leaves it
+		credit_note.insert(ignore_permissions=True)
+		credit_note.submit()
+		frappe.db.commit()
+
+		after = self._day()
+		self.assertEqual(after["returns"]["count"], 1)
+		self.assertAlmostEqual(after["returns"]["total"], -flt(sold.grand_total), 2)
+		self.assertEqual(after["excluded_invoices"], before["excluded_invoices"])
