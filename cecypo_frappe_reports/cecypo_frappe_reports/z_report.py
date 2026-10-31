@@ -13,6 +13,8 @@ from frappe import _
 from frappe.utils import add_days, flt, get_fullname, getdate, now_datetime
 
 NO_MODE = "(no mode)"
+# An invoice's branch: its till's warehouse, else the desk invoice's set_warehouse.
+BRANCH_SQL = "COALESCE(NULLIF(pp.warehouse, ''), si.set_warehouse)"
 
 
 @frappe.whitelist()
@@ -71,6 +73,7 @@ def _shift_scope(name):
 		"floats": _floats([name]),
 		"counted": _counted([closing.name] if closing else []),
 		"excluded": 0,
+		"excluded_invoices": 0,
 	}
 
 
@@ -95,20 +98,35 @@ def _day_scope(warehouse, date):
 		pluck="name",
 	)
 	params = {"date": date, "company": company, "warehouse": warehouse}
-	invoices = _invoices(
-		"si.posting_date = %(date)s AND si.company = %(company)s"
-		" AND COALESCE(NULLIF(pp.warehouse, ''), si.set_warehouse) = %(warehouse)s",
+	day = "si.posting_date = %(date)s AND si.company = %(company)s"
+	invoices = _invoices(f"{day} AND {BRANCH_SQL} = %(warehouse)s", params)
+	# Invoices with no branch at all (no till warehouse, no set_warehouse): counted, not lost.
+	excluded_invoices = frappe.db.sql(
+		f"""SELECT COUNT(*) FROM `tabSales Invoice` si
+		LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
+		WHERE si.docstatus = 1 AND {day} AND IFNULL({BRANCH_SQL}, '') = ''""",
 		params,
-	)
+	)[0][0]
 	entries, excluded = [], 0
 	for pe in _payment_entries("pe.posting_date = %(date)s AND pe.company = %(company)s", params):
-		# Branch: the shift's till, else the invoices it is allocated to, else none (left out).
+		# Branch: the shift's till, else the invoices it is allocated to, else none (left out
+		# and counted). A shift-stamped entry belongs wholly to its till's branch.
 		if pe.shift:
-			if pe.shift_warehouse == warehouse:
+			if not pe.shift_warehouse:
+				excluded += 1
+			elif pe.shift_warehouse == warehouse:
 				entries.append(pe)
-		elif not pe.refs:
+			continue
+		branched = [r for r in pe.refs if r.warehouse]
+		if not branched:
 			excluded += 1
-		elif any(r.warehouse == warehouse for r in pe.refs):
+		elif any(r.warehouse == warehouse for r in branched):
+			# Allocations to other branches' invoices are theirs; the unallocated remainder
+			# goes to the branch of the first allocated invoice, so exactly one branch has it.
+			unallocated = flt(pe.paid_amount) - sum(flt(r.allocated_amount) for r in pe.refs)
+			pe.not_ours = sum(flt(r.allocated_amount) for r in pe.refs if r.warehouse != warehouse)
+			if branched[0].warehouse != warehouse:
+				pe.not_ours += unallocated
 			entries.append(pe)
 	return {
 		"scope": "day",
@@ -123,6 +141,7 @@ def _day_scope(warehouse, date):
 		"floats": _floats(shifts or []),
 		"counted": _counted(closings or []),
 		"excluded": excluded,
+		"excluded_invoices": excluded_invoices,
 	}
 
 
@@ -148,8 +167,9 @@ def _invoices(where, params):
 
 
 def _payment_entries(where, params):
-	"""Submitted Receive entries from customers, each with `refs` (its Sales Invoice allocations
-	and their branch) and, when stamped with a shift, that shift's till warehouse."""
+	"""Submitted customer receipts (Receive) and refunds (Pay), each with `refs` (its Sales
+	Invoice allocations, in row order, and their branch) and, when stamped with a shift, that
+	shift's till warehouse."""
 	if _has("Payment Entry", "custom_pos_opening_entry"):
 		shift = "NULLIF(pe.custom_pos_opening_entry, '')"
 		join = """LEFT JOIN `tabPOS Opening Entry` poe ON poe.name = pe.custom_pos_opening_entry
@@ -159,10 +179,11 @@ def _payment_entries(where, params):
 		shift, join, shift_wh = "NULL", "", "NULL"
 	entries = frappe.db.sql(
 		f"""
-		SELECT pe.name, pe.owner, pe.mode_of_payment, pe.paid_amount,
+		SELECT pe.name, pe.owner, pe.payment_type, pe.mode_of_payment, pe.paid_amount,
 			{shift} AS shift, {shift_wh} AS shift_warehouse
 		FROM `tabPayment Entry` pe {join}
-		WHERE pe.payment_type = 'Receive' AND pe.party_type = 'Customer' AND pe.docstatus = 1 AND {where}
+		WHERE pe.payment_type IN ('Receive', 'Pay') AND pe.party_type = 'Customer'
+			AND pe.docstatus = 1 AND {where}
 		ORDER BY pe.posting_date, pe.creation
 		""",
 		params,
@@ -171,13 +192,14 @@ def _payment_entries(where, params):
 	refs = defaultdict(list)
 	if entries:
 		for r in frappe.db.sql(
-			"""
-			SELECT per.parent, per.reference_name, per.allocated_amount,
-				COALESCE(NULLIF(pp.warehouse, ''), si.set_warehouse) AS warehouse
+			f"""
+			SELECT per.parent, per.reference_name, ABS(per.allocated_amount) AS allocated_amount,
+				{BRANCH_SQL} AS warehouse
 			FROM `tabPayment Entry Reference` per
 			JOIN `tabSales Invoice` si ON si.name = per.reference_name
 			LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
 			WHERE per.reference_doctype = 'Sales Invoice' AND per.parent IN %(names)s
+			ORDER BY per.parent, per.idx
 			""",
 			{"names": tuple(e.name for e in entries)},
 			as_dict=True,
@@ -371,14 +393,23 @@ def _build(scope):
 			returns["total"] += flt(inv.rounded_total or inv.grand_total)
 
 	credit = defaultdict(float)
+	refunds = defaultdict(float)  # money paid back to customers by Payment Entry, per mode
+	paid_back = 0.0  # the part of those refunds settling returns already in scope
 	for pe in entries:
 		mode = pe.mode_of_payment or NO_MODE
 		allocated = sum(flt(r.allocated_amount) for r in pe.refs if r.reference_name in in_scope)
+		if pe.payment_type == "Pay":
+			# Listed under returns and off the balance, never in the drawer: klik's
+			# expected_by_mode counts only Receive entries, even when stamped with the shift.
+			refunds[mode] -= flt(pe.paid_amount)
+			paid_back += allocated
+			continue
 		if allocated:
 			lines.append((pe.owner, mode, allocated))
-		# ponytail: a desk entry split across two branches' invoices is credit on both; split per branch if it shows up.
-		if flt(pe.paid_amount - allocated, 2):
-			credit[mode] += flt(pe.paid_amount) - allocated
+		# not_ours: day scope's share of the entry that belongs to another branch.
+		rest = flt(pe.paid_amount) - allocated - flt(pe.get("not_ours"))
+		if flt(rest, 2):
+			credit[mode] += rest
 		if pe.shift and pe.mode_of_payment:
 			drawer_in[pe.mode_of_payment] += flt(pe.paid_amount)
 
@@ -422,9 +453,14 @@ def _build(scope):
 			}
 		)
 
-	refunded = sum(returns["modes"].values())
-	if flt(returns["total"] - refunded, 2):
-		returns["modes"][_("On account")] += returns["total"] - refunded
+	# What the returns in scope came to, less what went back in the till or by Payment Entry,
+	# is still owed to the customer. Refunds of earlier returns add to the total.
+	on_account = returns["total"] - sum(returns["modes"].values()) + paid_back
+	for mode, amount in refunds.items():
+		returns["modes"][mode] += amount
+	if flt(on_account, 2):
+		returns["modes"][_("On account")] += on_account
+	refund_total = flt(-sum(refunds.values()), 2)
 
 	tender_total = flt(sum(tenders.values()), 2)
 	credit_total = flt(sum(credit.values()), 2)
@@ -457,8 +493,9 @@ def _build(scope):
 		"returns": {
 			"count": returns["count"],
 			"modes": _money(returns["modes"]),
-			"total": flt(returns["total"], 2),
+			"total": flt(sum(returns["modes"].values()), 2),
 		},
+		"refund_total": refund_total,
 		"discount_total": flt(sum(flt(i.discount_amount) for i in invoices) + items_discount, 2),
 		"taxes": [{"description": t.description, "amount": flt(t.amount, 2)} for t in taxes],
 		"net_total": flt(sum(flt(i.net_total) for i in invoices), 2),
@@ -467,7 +504,7 @@ def _build(scope):
 		"expenses": expenses,
 		"expense_total": expense_total,
 		"cash_position": cash_position,
-		"total_balance": flt(tender_total + credit_total - expense_total, 2),
+		"total_balance": flt(tender_total + credit_total - expense_total - refund_total, 2),
 		"outstanding": [
 			{
 				"name": i.name,
@@ -479,4 +516,5 @@ def _build(scope):
 			if flt(i.outstanding_amount) > 0
 		],
 		"excluded_payment_entries": scope["excluded"],
+		"excluded_invoices": scope["excluded_invoices"],
 	}

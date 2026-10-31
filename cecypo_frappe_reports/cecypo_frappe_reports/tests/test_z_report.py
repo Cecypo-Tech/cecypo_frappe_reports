@@ -14,6 +14,7 @@ from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report
 
 TILL = "_Test Z Till"
 BRANCH = "_Test Z Branch"
+OTHER_BRANCH = "_Test Z Branch 2"
 ITEM = "_TEST-Z-ITEM"
 CUSTOMER = "_Test Z Customer"
 EXPENSE_TYPE = "Z Newspaper"
@@ -90,7 +91,8 @@ class TestZReport(FrappeTestCase):
 			raise unittest.SkipTest("the till needs two modes with accounts")
 		cls.other_account = account_of[cls.other]
 
-		cls.warehouse = cls._ensure_warehouse()
+		cls.warehouse = cls._ensure_warehouse(BRANCH)
+		cls.other_warehouse = cls._ensure_warehouse(OTHER_BRANCH)
 		cls._ensure_masters()
 		profile = frappe.get_doc("POS Profile", TILL)
 		profile.warehouse = cls.warehouse
@@ -117,15 +119,15 @@ class TestZReport(FrappeTestCase):
 		frappe.db.commit()
 
 	@classmethod
-	def _ensure_warehouse(cls):
-		name = frappe.db.get_value("Warehouse", {"warehouse_name": BRANCH, "company": cls.company})
+	def _ensure_warehouse(cls, branch):
+		name = frappe.db.get_value("Warehouse", {"warehouse_name": branch, "company": cls.company})
 		if name:
 			return name
 		return (
 			frappe.get_doc(
 				{
 					"doctype": "Warehouse",
-					"warehouse_name": BRANCH,
+					"warehouse_name": branch,
 					"company": cls.company,
 					"parent_warehouse": frappe.db.get_value(
 						"Warehouse", {"company": cls.company, "is_group": 1}, "name", order_by="lft"
@@ -204,7 +206,8 @@ class TestZReport(FrappeTestCase):
 		frappe.db.commit()
 		return result["return_invoice"]
 
-	def _desk_invoice(self, posting_date=None):
+	def _desk_invoice(self, posting_date=None, warehouse=None):
+		"""A desk sale on credit, at the test branch unless `warehouse` says otherwise ("" = none)."""
 		doc = frappe.new_doc("Sales Invoice")
 		doc.update(
 			{
@@ -213,7 +216,7 @@ class TestZReport(FrappeTestCase):
 				"posting_date": posting_date or nowdate(),
 				"set_posting_time": 1,
 				"due_date": posting_date or nowdate(),
-				"set_warehouse": self.warehouse,
+				"set_warehouse": self.warehouse if warehouse is None else warehouse,
 			}
 		)
 		doc.append("items", {"item_code": ITEM, "qty": 1, "rate": 100})
@@ -223,7 +226,7 @@ class TestZReport(FrappeTestCase):
 		frappe.db.commit()
 		return doc
 
-	def _receipt(self, amount, invoice=None, stamp=True):
+	def _receipt(self, amount, invoice=None, stamp=True, allocations=None):
 		"""A Receive Payment Entry in the other mode, optionally allocated and stamped with the shift."""
 		pe = frappe.new_doc("Payment Entry")
 		pe.update(
@@ -243,10 +246,10 @@ class TestZReport(FrappeTestCase):
 		)
 		if stamp:
 			pe.custom_pos_opening_entry = self.shift
-		if invoice:
+		for name, allocated in allocations or ([(invoice, amount)] if invoice else []):
 			pe.append(
 				"references",
-				{"reference_doctype": "Sales Invoice", "reference_name": invoice, "allocated_amount": amount},
+				{"reference_doctype": "Sales Invoice", "reference_name": name, "allocated_amount": allocated},
 			)
 		pe.setup_party_account_field()
 		pe.set_missing_values()
@@ -387,3 +390,59 @@ class TestZReport(FrappeTestCase):
 			build_z_report(warehouse="X")
 		with self.assertRaises(frappe.ValidationError):
 			build_z_report(opening_entry=self.shift, warehouse="X", date=nowdate())
+
+	def test_desk_refund_to_customer_is_a_return(self):
+		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+		from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_return
+
+		credit_note = make_sales_return(self._desk_invoice().name)
+		credit_note.update_outstanding_for_self = 1
+		credit_note.set_warehouse = self.warehouse  # make_sales_return does not carry it over
+		credit_note.insert(ignore_permissions=True)
+		credit_note.submit()
+		frappe.db.commit()
+		amount = abs(flt(credit_note.outstanding_amount))
+		before = self._day()
+
+		pe = get_payment_entry("Sales Invoice", credit_note.name, bank_account=self.other_account)
+		self.assertEqual((pe.payment_type, pe.party_type), ("Pay", "Customer"), "fixture: a refund")
+		pe.update({"mode_of_payment": self.other, "reference_no": "Z-REFUND", "reference_date": nowdate()})
+		pe.insert(ignore_permissions=True)
+		pe.submit()
+		frappe.db.commit()
+
+		after = self._day()
+		self.assertIn({"mode": self.other, "amount": -amount}, after["returns"]["modes"])
+		self.assertAlmostEqual(after["returns"]["total"], before["returns"]["total"], 2)  # was on account
+		self.assertAlmostEqual(after["refund_total"], amount, 2)
+		self.assertAlmostEqual(after["total_balance"], before["total_balance"] - amount, 2)
+		self.assertEqual(after["cash_position"], before["cash_position"])
+
+	def test_desk_receipt_split_across_branches_credits_each_its_share(self):
+		here = self._desk_invoice()
+		there = self._desk_invoice(warehouse=self.other_warehouse)
+		a, b = flt(here.outstanding_amount), flt(there.outstanding_amount)
+		# Allocated to both, plus 50 unallocated: the remainder goes to the first invoice's branch.
+		self._receipt(a + b + 50, stamp=False, allocations=[(here.name, a), (there.name, b)])
+
+		ours = self._day()
+		theirs = build_z_report(warehouse=self.other_warehouse, date=nowdate())
+		self.assertAlmostEqual(ours["credit_total"], 50, 2)
+		self.assertAlmostEqual(ours["tender_total"], a, 2)
+		self.assertEqual(theirs["credit_total"], 0)
+		self.assertAlmostEqual(theirs["tender_total"], b, 2)
+
+	def test_unbranched_invoice_and_shift_receipt_are_counted(self):
+		# Both counts are company-wide (no branch), so measure the change.
+		before = self._day()
+		self._desk_invoice(warehouse="")
+		self.assertEqual(self._day()["excluded_invoices"], before["excluded_invoices"] + 1)
+
+		frappe.db.set_value("POS Profile", TILL, "warehouse", None)
+		self.addCleanup(frappe.db.commit)
+		self.addCleanup(frappe.db.set_value, "POS Profile", TILL, "warehouse", self.warehouse)
+		frappe.db.commit()
+		before = self._day()
+		self._receipt(77)  # stamped with a shift whose till has no warehouse
+		self.assertEqual(self._day()["excluded_payment_entries"], before["excluded_payment_entries"] + 1)
+		self.assertEqual(self._shift()["excluded_invoices"], 0)
