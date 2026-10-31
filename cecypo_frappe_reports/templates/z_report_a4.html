@@ -1,3 +1,4 @@
+{% autoescape true %}
 {%- macro money(amount) -%}{{ frappe.utils.fmt_money(amount, currency=currency) }}{%- endmacro -%}
 <style>
 	.z-a4 { font-size: 12px; max-width: 190mm; margin: 0 auto; color: #000; }
@@ -23,6 +24,7 @@
 	<h2>{{ R.company }}</h2>
 	<div class="z-sub"><b>{{ R.warehouse }}</b><br><b>{{ _("Z REPORT") }}</b></div>
 	<table>
+		<tr><td>{{ _("Date") }}</td><td class="r">{{ (R.period_start or "")[:10] }}</td></tr>
 		<tr><td>{{ _("Report") }}</td><td class="r">{{ R.report_no }}</td></tr>
 		<tr><td>{{ _("From") }}</td><td class="r">{{ (R.period_start or "")[:16] }}</td></tr>
 		<tr><td>{{ _("To") }}</td><td class="r">{{ (R.period_end or "")[:16] }}</td></tr>
@@ -133,3 +135,4 @@
 	<p style="margin-top: 10px;"><i>{{ _("Not counted: {0} invoices, {1} payments (no branch)").format(R.excluded_invoices or 0, R.excluded_payment_entries or 0) }}</i></p>
 	{%- endif %}
 </div>
+{% endautoescape %}

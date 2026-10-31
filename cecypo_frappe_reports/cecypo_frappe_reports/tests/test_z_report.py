@@ -647,6 +647,33 @@ class TestZReportPage(FrappeTestCase):
 		self.assertIn("Not counted", out)
 		self.assertIn("Counted", out)
 
+	def test_user_strings_are_escaped(self):
+		from unittest import mock
+
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_z_report_html
+
+		evil = "<script>alert(1)</script>"
+		base = _report()
+		report = _report(
+			company=evil,
+			warehouse=evil,
+			users=[dict(base["users"][0], full_name=evil, modes=[{"mode": evil, "amount": 1.0}])],
+			taxes=[{"description": evil, "amount": 1.0}],
+			expenses=[dict(base["expenses"][0], label=evil, note=evil)],
+			cash_position=[dict(base["cash_position"][0], mode=evil)],
+			outstanding=[
+				{"name": evil, "customer_name": evil, "grand_total": 5.0, "outstanding_amount": 2.0}
+			],
+		)
+		with mock.patch(
+			"cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report.get_z_report",
+			return_value=report,
+		):
+			out = get_z_report_html("Main Branch", "2026-10-31")
+		self.assertNotIn("<script>", out)
+		self.assertIn("&lt;script&gt;", out)
+		self.assertIn("2026-10-31", out)
+
 	def test_other_warehouse_is_refused(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_z_report_html
 
