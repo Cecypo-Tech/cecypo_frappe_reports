@@ -672,7 +672,7 @@ class TestZReportPage(FrappeTestCase):
 			out = get_z_report_html("Main Branch", "2026-10-31")
 		self.assertNotIn("<script>", out)
 		self.assertIn("&lt;script&gt;", out)
-		self.assertIn("2026-10-31", out)
+		self.assertIn('<td>Date</td><td class="r">2026-10-31</td>', out)
 
 	def test_other_warehouse_is_refused(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import get_z_report_html
@@ -691,6 +691,40 @@ class TestZReportPage(FrappeTestCase):
 		frappe.set_user(email)
 		with self.assertRaises(frappe.PermissionError):
 			get_z_report_html(b, nowdate())
+
+	def _user(self, email, roles, warehouses=()):
+		frappe.set_user("Administrator")
+		self.addCleanup(self._drop_user, email)
+		user = frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "ZPerm", "send_welcome_email": 0}
+		).insert(ignore_permissions=True)
+		user.add_roles(*roles)
+		for w in warehouses:
+			frappe.get_doc(
+				{"doctype": "User Permission", "user": email, "allow": "Warehouse", "for_value": w}
+			).insert(ignore_permissions=True)
+		frappe.set_user(email)
+
+	def test_default_warehouse(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.page.z_report.z_report import (
+			get_default_warehouse,
+		)
+
+		a, b = frappe.get_all("Warehouse", {"is_group": 0}, pluck="name", limit=2)
+		self._user("z-report-none@example.com", ["Accounts User"])
+		self.assertIsNone(get_default_warehouse())
+		self._user("z-report-one@example.com", ["Accounts User"], [a])
+		self.assertEqual(get_default_warehouse(), a)
+		self._user("z-report-two@example.com", ["Accounts User"], [a, b])
+		self.assertIsNone(get_default_warehouse())
+
+	def test_accounts_manager_needs_no_warehouse_read(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import get_z_report
+
+		w = frappe.get_all("Warehouse", {"is_group": 0}, pluck="name", limit=1)[0]
+		self._user("z-report-am@example.com", ["Accounts Manager"])
+		self.assertFalse(frappe.has_permission("Warehouse", doc=w))
+		self.assertEqual(get_z_report(w, nowdate())["warehouse"], w)
 
 	@staticmethod
 	def _drop_user(email):

@@ -3,7 +3,7 @@
 
 import frappe
 
-from cecypo_frappe_reports.cecypo_frappe_reports.z_report import get_z_report
+from cecypo_frappe_reports.cecypo_frappe_reports.z_report import _permitted_warehouses, get_z_report
 
 
 @frappe.whitelist()
@@ -19,5 +19,5 @@ def get_z_report_html(warehouse: str, date: str) -> str:
 @frappe.whitelist()
 def get_default_warehouse() -> str | None:
 	"""The user's only permitted Warehouse, else None."""
-	allowed = {p.get("doc") for p in frappe.permissions.get_user_permissions().get("Warehouse", [])}
-	return allowed.pop() if len(allowed) == 1 else None
+	allowed = _permitted_warehouses()
+	return next(iter(allowed)) if len(allowed) == 1 else None

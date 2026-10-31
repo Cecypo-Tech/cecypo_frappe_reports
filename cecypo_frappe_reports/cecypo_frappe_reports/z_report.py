@@ -26,11 +26,20 @@ BRANCH_JOINS = """LEFT JOIN `tabPOS Profile` pp ON pp.name = si.pos_profile
 	LEFT JOIN `tabPOS Profile` opp ON opp.name = osi.pos_profile"""
 
 
+def _permitted_warehouses() -> set:
+	"""The warehouses named by the user's User Permissions; empty means unrestricted."""
+	from frappe.core.doctype.user_permission.user_permission import get_user_permissions
+
+	return {p.doc for p in get_user_permissions(frappe.session.user).get("Warehouse", [])}
+
+
 @frappe.whitelist()
 def get_z_report(warehouse: str, date: str) -> dict:
 	if not frappe.has_permission("Sales Invoice", "report"):
 		frappe.throw(_("Not permitted to view sales reports."), frappe.PermissionError)
-	if not frappe.has_permission("Warehouse", doc=warehouse):
+	# Warehouse read is not needed (Accounts roles lack it); User Permissions still narrow the branch.
+	allowed = _permitted_warehouses()
+	if allowed and warehouse not in allowed:
 		frappe.throw(_("Not permitted for warehouse {0}.").format(warehouse), frappe.PermissionError)
 	return build_z_report(warehouse=warehouse, date=date)
 
