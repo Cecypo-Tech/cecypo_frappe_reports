@@ -6,11 +6,12 @@ The drawer ("cash_position") is counted the way klik_pos files it at shift close
 klik_pos is a soft dependency: its custom fields are checked with has_column.
 """
 
+import textwrap
 from collections import defaultdict
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, flt, get_fullname, getdate, now_datetime
+from frappe.utils import add_days, flt, fmt_money, get_fullname, getdate, now_datetime
 
 NO_MODE = "(no mode)"
 # An invoice's branch: its till's warehouse, else the desk invoice's set_warehouse; a return
@@ -526,3 +527,130 @@ def _build(scope):
 		"excluded_payment_entries": scope["excluded"],
 		"excluded_invoices": scope["excluded_invoices"],
 	}
+
+
+# ---- ESC/POS slip (80mm thermal, 42 columns). Double width only, never double height. ----
+INIT = "\x1b@\x1c\x2e\x1b\x74\x00"
+BOLD_ON, BOLD_OFF = "\x1b\x45\x01", "\x1b\x45\x00"
+LEFT, CENTER = "\x1b\x61\x00", "\x1b\x61\x01"
+DBLW, NORMAL = "\x1d\x21\x10", "\x1d\x21\x00"
+CUT = "\x1b\x64\x04\x1d\x56\x00"
+
+
+def _row(left, right, width=42):
+	"""`left` and `right` on one line, right-aligned; `left` is cut so the pair always fits."""
+	left, right = str(left), str(right)
+	return left[: max(width - len(right) - 1, 0)].ljust(width - len(right)) + right
+
+
+def z_report_escpos(opening_entry: str) -> str:
+	return render_escpos(build_z_report(opening_entry=opening_entry))
+
+
+def render_escpos(report: dict, width: int | None = None) -> str:
+	"""The slip as a str of latin-1 code points (one char per printer byte)."""
+	if width is None:
+		try:
+			from cecypo_qz_extension.escpos import qz_columns
+
+			width = qz_columns(42)
+		except ImportError:
+			width = 42
+	company = report.get("company")
+	currency = frappe.db.get_value("Company", company, "default_currency") if company else None
+	hr = "-" * width
+	out = [INIT]
+
+	def money(amount):
+		return fmt_money(amount, currency=currency)
+
+	def line(text=""):
+		out.append(f"{text}\n")
+
+	def head(title):
+		line(f"{BOLD_ON}{title}{BOLD_OFF}")
+
+	def pairs(rows, key="amount"):
+		for r in rows:
+			line(_row(r["mode"], money(r[key]), width))
+
+	out.append(CENTER)
+	for part in textwrap.wrap(company or "", width // 2) or [""]:
+		line(f"{DBLW}{part}{NORMAL}")
+	if report.get("warehouse"):
+		line(report["warehouse"])
+	line(f"{BOLD_ON}{_('Z REPORT')}{BOLD_OFF}")
+	out.append(LEFT)
+	line(hr)
+	line(_row(_("Report"), report.get("report_no") or "", width))
+	line(_row(_("From"), str(report.get("period_start") or "")[:16], width))
+	line(_row(_("To"), str(report.get("period_end") or "")[:16], width))
+	line(_row(_("Printed"), str(report.get("printed_at") or "")[:16], width))
+	if report.get("first_doc"):
+		line(_row(_("First invoice"), report["first_doc"], width))
+		line(_row(_("Last invoice"), report["last_doc"], width))
+	line(_row(_("Sales"), report.get("sales_count", 0), width))
+	line(hr)
+
+	head(_("Sales by user"))
+	for u in report.get("users", []):
+		line(_row(u["full_name"] or u["user"], money(u["total"]), width))
+		for m in u["modes"]:
+			line(_row(f"  {m['mode']}", money(m["amount"]), width))
+	line(hr)
+
+	head(_("Tender types"))
+	pairs(report.get("tenders", []))
+	line(f"{BOLD_ON}{_row(_('Total'), money(report.get('tender_total', 0)), width)}{BOLD_OFF}")
+	line(hr)
+
+	head(_("Credit payments collected"))
+	pairs(report.get("credit_collected", []))
+	line(_row(_("Total"), money(report.get("credit_total", 0)), width))
+	line(hr)
+
+	returns = report.get("returns") or {}
+	head(_("Returns"))
+	line(_row(_("Count"), returns.get("count", 0), width))
+	pairs(returns.get("modes", []))
+	line(_row(_("Total"), money(returns.get("total", 0)), width))
+	line(hr)
+
+	head(_("Discounts"))
+	line(_row(_("Total discount"), money(report.get("discount_total", 0)), width))
+	line(hr)
+
+	head(_("Tax"))
+	line(_row(_("Net total"), money(report.get("net_total", 0)), width))
+	for t in report.get("taxes", []):
+		line(_row(t["description"], money(t["amount"]), width))
+	line(_row(_("Grand total"), money(report.get("grand_total", 0)), width))
+	line(hr)
+
+	head(_("Expenses"))
+	for e in report.get("expenses", []):
+		line(_row(e["label"] or e["name"], money(e["amount"]), width))
+		if e.get("pending"):
+			line(f"  ({_('awaiting approval')})")
+	line(_row(_("Total"), money(report.get("expense_total", 0)), width))
+	line(hr)
+
+	head(_("Cash position"))
+	for c in report.get("cash_position", []):
+		line(c["mode"])
+		for label, key in (("Opening", "opening"), ("In", "in"), ("Out", "out"), ("Expected", "expected")):
+			line(_row(f"  {_(label)}", money(c[key]), width))
+		if c["counted"] is not None:
+			line(_row(f"  {_('Counted')}", money(c["counted"]), width))
+			line(_row(f"  {_('Diff')}", money(c["difference"]), width))
+	line(hr)
+
+	line(f"{BOLD_ON}{_row(_('Total balance'), money(report.get('total_balance', 0)), width)}{BOLD_OFF}")
+	if report.get("excluded_invoices") or report.get("excluded_payment_entries"):
+		line(
+			_("Not counted: {0} invoices, {1} payments (no branch)").format(
+				report.get("excluded_invoices", 0), report.get("excluded_payment_entries", 0)
+			)
+		)
+	out.append(CUT)
+	return "".join(out)

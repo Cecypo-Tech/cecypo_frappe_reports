@@ -102,7 +102,10 @@ doctype_js = {"Process Statement Of Accounts": "public/js/psoa_batch.js"}
 
 # add methods and filters to jinja environment
 jinja = {
-	"methods": ["cecypo_frappe_reports.cecypo_frappe_reports.utils.get_future_payments_by_invoice"],
+	"methods": [
+		"cecypo_frappe_reports.cecypo_frappe_reports.utils.get_future_payments_by_invoice",
+		"cecypo_frappe_reports.cecypo_frappe_reports.z_report.z_report_escpos",
+	],
 }
 
 # Installation

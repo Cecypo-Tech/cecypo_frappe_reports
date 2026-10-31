@@ -4,13 +4,14 @@ Sales go through klik's own invoice builder on a till of the test's own (open_ow
 moved to a warehouse of its own so the day-scope figures see only this test's documents.
 """
 
+import re
 import unittest
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days, flt, nowdate
 
-from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report
+from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report, render_escpos
 
 TILL = "_Test Z Till"
 BRANCH = "_Test Z Branch"
@@ -462,3 +463,130 @@ class TestZReport(FrappeTestCase):
 		self.assertEqual(after["returns"]["count"], 1)
 		self.assertAlmostEqual(after["returns"]["total"], -flt(sold.grand_total), 2)
 		self.assertEqual(after["excluded_invoices"], before["excluded_invoices"])
+
+
+HEADERS = [
+	"Z REPORT",
+	"Sales by user",
+	"Tender types",
+	"Credit payments collected",
+	"Returns",
+	"Discounts",
+	"Tax",
+	"Expenses",
+	"Cash position",
+	"Total balance",
+]
+
+
+def _report(**over):
+	r = {
+		"company": "",
+		"warehouse": "Main Branch",
+		"report_no": "POS-CLO-1",
+		"period_start": "2026-10-31 08:00:00",
+		"period_end": "2026-10-31 18:00:00",
+		"printed_at": "2026-10-31 18:05:00",
+		"first_doc": "SINV-1",
+		"last_doc": "SINV-9",
+		"sales_count": 9,
+		"users": [
+			{
+				"user": "a@x.com",
+				"full_name": "Amina Very Long Cashier Name",
+				"total": 900.0,
+				"modes": [{"mode": "Cash", "amount": 900.0}],
+			}
+		],
+		"tenders": [{"mode": "Cash", "amount": 900.0}],
+		"tender_total": 900.0,
+		"credit_collected": [{"mode": "M-Pesa", "amount": 100.0}],
+		"credit_total": 100.0,
+		"returns": {"count": 1, "modes": [{"mode": "Cash", "amount": -50.0}], "total": -50.0},
+		"refund_total": 0.0,
+		"discount_total": 10.0,
+		"taxes": [{"description": "VAT 16% included in the price of goods", "amount": 124.0}],
+		"net_total": 776.0,
+		"tax_total": 124.0,
+		"grand_total": 900.0,
+		"expenses": [
+			{
+				"name": "JV-1",
+				"label": "Newspaper",
+				"note": "",
+				"amount": 20.0,
+				"user": "a@x.com",
+				"pending": True,
+			}
+		],
+		"expense_total": 20.0,
+		"cash_position": [
+			{
+				"mode": "Cash",
+				"opening": 100.0,
+				"in": 900.0,
+				"out": 20.0,
+				"expected": 980.0,
+				"counted": None,
+				"difference": None,
+			}
+		],
+		"total_balance": 980.0,
+		"outstanding": [],
+		"excluded_invoices": 0,
+		"excluded_payment_entries": 0,
+	}
+	r.update(over)
+	return r
+
+
+class TestZReportEscpos(FrappeTestCase):
+	def test_frame_and_width(self):
+		out = render_escpos(_report(company="A Rather Long Company Name Trading Limited"))
+		self.assertTrue(out.startswith("\x1b@\x1c\x2e\x1b\x74\x00"))
+		self.assertTrue(out.endswith("\x1b\x64\x04\x1d\x56\x00"))
+		for ln in out.split("\n"):
+			self.assertLessEqual(len(re.sub(r"\x1b@|\x1b[atdE].|\x1d..|\x1c.", "", ln)), 42, ln)
+		self.assertNotIn("\x1d\x21\x01", out)
+		self.assertNotIn("\x1d\x21\x11", out)
+
+	def test_sections_in_order(self):
+		out = render_escpos(_report())
+		at = [out.index(h) for h in HEADERS]
+		self.assertEqual(at, sorted(at))
+
+	def test_pending_expense(self):
+		self.assertIn("(awaiting approval)", render_escpos(_report()))
+
+	def test_counted_and_diff_only_when_counted(self):
+		self.assertNotIn("Counted", render_escpos(_report()))
+		self.assertNotIn("Diff", render_escpos(_report()))
+		cp = [dict(_report()["cash_position"][0], counted=970.0, difference=-10.0)]
+		out = render_escpos(_report(cash_position=cp))
+		self.assertIn("Counted", out)
+		self.assertIn("Diff", out)
+
+	def test_not_counted_line_only_when_excluded(self):
+		self.assertNotIn("Not counted", render_escpos(_report()))
+		self.assertIn(
+			"Not counted: 2 invoices, 1 payments",
+			render_escpos(_report(excluded_invoices=2, excluded_payment_entries=1)),
+		)
+
+	def test_empty_report(self):
+		out = render_escpos(
+			_report(
+				users=[],
+				tenders=[],
+				credit_collected=[],
+				taxes=[],
+				expenses=[],
+				cash_position=[],
+				returns={"count": 0, "modes": [], "total": 0},
+				first_doc=None,
+				last_doc=None,
+				sales_count=0,
+			)
+		)
+		for h in HEADERS:
+			self.assertIn(h, out)
