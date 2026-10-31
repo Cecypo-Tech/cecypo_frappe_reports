@@ -14,13 +14,14 @@
 	.z-a4 .ind { padding-left: 16px; }
 	@media print {
 		@page { size: A4; margin: 12mm; }
-		.navbar, .page-head, .layout-side-section, .sidebar-section, .page-actions, footer { display: none !important; }
-		body, .layout-main-section, .page-body, .container { margin: 0 !important; padding: 0 !important; background: #fff !important; }
-		.z-a4 { max-width: none; }
+		/* Desk chrome differs per version: hide everything, show only the report. */
+		body * { visibility: hidden; }
+		#z-report-a4, #z-report-a4 * { visibility: visible; }
+		#z-report-a4 { position: absolute; left: 0; top: 0; width: 100%; max-width: none; }
 	}
 </style>
 {%- set R = report -%}
-<div class="z-a4">
+<div class="z-a4" id="z-report-a4">
 	<h2>{{ R.company }}</h2>
 	<div class="z-sub"><b>{{ R.warehouse }}</b><br><b>{{ _("Z REPORT") }}</b></div>
 	<table>
