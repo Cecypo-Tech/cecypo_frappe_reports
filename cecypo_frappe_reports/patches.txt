@@ -4,3 +4,4 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+cecypo_frappe_reports.patches.drop_z_report_formats_without_klik

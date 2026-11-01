@@ -4,7 +4,14 @@
 import frappe
 from frappe import _
 
-from cecypo_frappe_reports.cecypo_frappe_reports.z_report import _permitted_warehouses, get_z_report
+try:  # the Z-report's figures live in klik_pos
+	from klik_pos.z_report import _permitted_warehouses, get_z_report
+except ImportError:
+
+	def _needs_klik(*args, **kwargs):
+		frappe.throw(_("The Z Report needs the klik_pos app."))
+
+	_permitted_warehouses = get_z_report = _needs_klik
 
 
 @frappe.whitelist()
