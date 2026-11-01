@@ -65,7 +65,10 @@ def _has(doctype, column):
 
 def _shift_scope(name):
 	opening = frappe.db.get_value(
-		"POS Opening Entry", name, ["name", "company", "pos_profile", "period_start_date"], as_dict=True
+		"POS Opening Entry",
+		name,
+		["name", "company", "pos_profile", "user", "period_start_date"],
+		as_dict=True,
 	)
 	if not opening:
 		frappe.throw(_("POS Opening Entry {0} not found.").format(name), frappe.DoesNotExistError)
@@ -79,6 +82,9 @@ def _shift_scope(name):
 	return {
 		"scope": "shift",
 		"company": opening.company,
+		"pos_profile": opening.pos_profile,
+		"cashier": opening.user,
+		"closing": closing.name if closing else None,
 		"warehouse": frappe.db.get_value("POS Profile", opening.pos_profile, "warehouse"),
 		"report_no": closing.name if closing else name,
 		"period_start": str(opening.period_start_date),
@@ -149,6 +155,9 @@ def _day_scope(warehouse, date):
 	return {
 		"scope": "day",
 		"company": company,
+		"pos_profile": None,
+		"cashier": None,
+		"closing": None,
 		"warehouse": warehouse,
 		"report_no": f"{warehouse} {date}",
 		"period_start": f"{date} 00:00:00",
@@ -357,6 +366,21 @@ def _change_by_invoice(invoices, rows_of):
 	return change
 
 
+def _printed_by(closing):
+	"""Who asked for the print. QZ's agent renders a queued job as its own API user with
+	ignore_print_permissions set; then it is whoever queued the newest Print Job for the closing."""
+	if closing and frappe.flags.ignore_print_permissions and frappe.db.exists("DocType", "Print Job"):
+		owner = frappe.db.get_value(
+			"Print Job",
+			{"reference_doctype": "POS Closing Entry", "reference_name": closing},
+			"owner",
+			order_by="creation desc",
+		)
+		if owner:
+			return owner
+	return frappe.session.user
+
+
 # ---- the report --------------------------------------------------------------------------
 
 
@@ -531,11 +555,18 @@ def _build(scope):
 	tender_total = flt(sum(tenders.values()), 2)
 	credit_total = flt(sum(credit.values()), 2)
 	expense_total = flt(sum(e["amount"] for e in expenses), 2)
+	printed_by = _printed_by(scope["closing"])
 	return {
 		"scope": scope["scope"],
 		"company": scope["company"],
+		"tax_id": frappe.db.get_value("Company", scope["company"], "tax_id"),
 		"warehouse": scope["warehouse"],
+		"pos_profile": scope["pos_profile"],
+		"cashier": scope["cashier"],
+		"cashier_name": get_fullname(scope["cashier"]) if scope["cashier"] else None,
 		"report_no": scope["report_no"],
+		"printed_by": printed_by,
+		"printed_by_name": get_fullname(printed_by),
 		"printed_at": str(now_datetime()),
 		"period_start": scope["period_start"],
 		"period_end": scope["period_end"],
@@ -604,9 +635,30 @@ def _row(left, right, width=42):
 
 
 def z_report_escpos(opening_entry: str) -> str:
-	"""The slip for a closed shift. Called from the Print Format, which Frappe will also render
-	for an unsaved doc dict, so the check is here: only a submitted closing's report, and only for
-	a user who may print that closing (an open shift's expected amounts stay hidden)."""
+	"""The slip for a closed shift (Print Format "Z Report ESC/POS")."""
+	return render_escpos(_closed_shift_report(opening_entry))
+
+
+def z_report_html(opening_entry: str) -> str:
+	"""The 80mm page for a closed shift (Print Format "Z Report"), previewable in the print view."""
+	return render_html(_closed_shift_report(opening_entry))
+
+
+def render_html(report: dict) -> str:
+	currency = (
+		frappe.db.get_value("Company", report["company"], "default_currency")
+		if report.get("company")
+		else None
+	)
+	return frappe.render_template(
+		"cecypo_frappe_reports/templates/z_report_80mm.html", {"report": report, "currency": currency}
+	)
+
+
+def _closed_shift_report(opening_entry: str) -> dict:
+	"""Called from the Print Formats, which Frappe will also render for an unsaved doc dict, so the
+	check is here: only a submitted closing's report, and only for a user who may print that closing
+	(an open shift's expected amounts stay hidden)."""
 	closing = frappe.db.get_value("POS Closing Entry", {"pos_opening_entry": opening_entry, "docstatus": 1})
 	# QZ renders queued jobs as its print agent's API user with ignore_print_permissions set; the
 	# cashier's own print permission was checked when the job was queued (QZ's reprint).
@@ -615,7 +667,7 @@ def z_report_escpos(opening_entry: str) -> str:
 		and not frappe.has_permission("POS Closing Entry", "print", doc=closing)
 	):
 		frappe.throw(_("Not permitted to print this Z-report."), frappe.PermissionError)
-	return render_escpos(build_z_report(opening_entry=opening_entry))
+	return build_z_report(opening_entry=opening_entry)
 
 
 def render_escpos(report: dict, width: int | None = None) -> str:
@@ -653,10 +705,19 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 	line(f"{BOLD_ON}{_('Z REPORT')}{BOLD_OFF}")
 	out.append(LEFT)
 	line(hr)
+	if report.get("tax_id"):
+		line(_row(_("Tax ID"), report["tax_id"], width))
 	line(_row(_("Report"), report.get("report_no") or "", width))
-	line(_row(_("From"), str(report.get("period_start") or "")[:16], width))
-	line(_row(_("To"), str(report.get("period_end") or "")[:16], width))
-	line(_row(_("Printed"), str(report.get("printed_at") or "")[:16], width))
+	if report.get("pos_profile"):
+		line(_row(_("Till"), report["pos_profile"], width))
+	if report.get("cashier"):
+		line(_row(_("Cashier"), report.get("cashier_name") or report["cashier"], width))
+	opened, closed = (_("Opened"), _("Closed")) if report.get("pos_profile") else (_("From"), _("To"))
+	line(_row(opened, str(report.get("period_start") or "")[:16], width))
+	line(_row(closed, str(report.get("period_end") or "")[:16], width))
+	if report.get("printed_by"):
+		line(_row(_("Printed by"), report.get("printed_by_name") or report["printed_by"], width))
+	line(_row(_("Printed on"), str(report.get("printed_at") or "")[:16], width))
 	if report.get("first_doc"):
 		line(_row(_("First invoice"), report["first_doc"], width))
 		line(_row(_("Last invoice"), report["last_doc"], width))

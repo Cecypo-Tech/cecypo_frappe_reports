@@ -11,7 +11,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days, flt, nowdate
 
-from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report, render_escpos
+from cecypo_frappe_reports.cecypo_frappe_reports.z_report import build_z_report, render_escpos, render_html
 
 TILL = "_Test Z Till"
 BRANCH = "_Test Z Branch"
@@ -596,6 +596,16 @@ class TestZReport(FrappeTestCase):
 		self.assertAlmostEqual(ours["refund_total"], a + 20, 2)  # the remainder: first allocated branch
 		self.assertAlmostEqual(theirs["refund_total"], b, 2)
 
+	def test_shift_header(self):
+		r = build_z_report(opening_entry=self.shift)
+		self.assertEqual(r["pos_profile"], TILL)
+		self.assertEqual(r["cashier"], frappe.db.get_value("POS Opening Entry", self.shift, "user"))
+		self.assertEqual(r["tax_id"], frappe.db.get_value("Company", self.company, "tax_id"))
+		self.assertEqual(r["printed_by"], "Administrator")
+		day = build_z_report(warehouse=self.warehouse, date=nowdate())
+		self.assertIsNone(day["pos_profile"])
+		self.assertEqual(day["printed_by"], "Administrator")
+
 	def test_escpos_refused_without_closing_or_print_permission(self):
 		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import z_report_escpos
 
@@ -623,6 +633,13 @@ HEADERS = [
 ]
 
 
+def _assert_in_order(out):
+	"""Every section header present, in order (each searched after the one before)."""
+	at = 0
+	for h in HEADERS:
+		at = out.index(h, at)
+
+
 def _report(**over):
 	r = {
 		"company": "",
@@ -631,6 +648,12 @@ def _report(**over):
 		"period_start": "2026-10-31 08:00:00",
 		"period_end": "2026-10-31 18:00:00",
 		"printed_at": "2026-10-31 18:05:00",
+		"tax_id": "P051234567X",
+		"pos_profile": "Till 1",
+		"cashier": "a@x.com",
+		"cashier_name": "Amina",
+		"printed_by": "m@x.com",
+		"printed_by_name": "Manager Mo",
 		"first_doc": "SINV-1",
 		"last_doc": "SINV-9",
 		"sales_count": 9,
@@ -714,8 +737,7 @@ class TestZReportEscpos(FrappeTestCase):
 
 	def test_sections_in_order(self):
 		out = render_escpos(_report())
-		at = [out.index(h) for h in HEADERS]
-		self.assertEqual(at, sorted(at))
+		_assert_in_order(out)
 
 	def test_pending_expense(self):
 		self.assertIn("(awaiting approval)", render_escpos(_report()))
@@ -797,6 +819,109 @@ class TestZReportEscpos(FrappeTestCase):
 			self.assertIn(h, out)
 
 
+class TestZReportHeader(FrappeTestCase):
+	def test_escpos_header(self):
+		out = render_escpos(_report(), width=42)
+		for text in (
+			"Tax ID",
+			"P051234567X",
+			"Till",
+			"Till 1",
+			"Cashier",
+			"Amina",
+			"Opened",
+			"Closed",
+			"Printed by",
+			"Manager Mo",
+			"Printed on",
+		):
+			self.assertIn(text, out)
+		out = render_escpos(_report(tax_id=None, pos_profile=None, cashier=None, cashier_name=None))
+		self.assertNotIn("Tax ID", out)
+		self.assertNotIn("Till", out)
+		self.assertNotIn("\nCashier ", out)
+
+	def test_printed_by_is_the_print_jobs_owner_under_qz(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import _printed_by
+
+		if not frappe.db.exists("DocType", "Print Job"):
+			raise unittest.SkipTest("cecypo_qz_extension is not installed")
+		closing = frappe.get_all("POS Closing Entry", {"docstatus": 1}, pluck="name", limit=1)
+		if not closing:
+			raise unittest.SkipTest("no submitted POS Closing Entry on this site")
+		self.assertEqual(_printed_by(closing[0]), frappe.session.user)  # preview / browser print
+		job = frappe.get_doc(
+			{
+				"doctype": "Print Job",
+				"reference_doctype": "POS Closing Entry",
+				"reference_name": closing[0],
+				"status": "Queued",
+			}
+		).insert(ignore_permissions=True, ignore_links=True, ignore_mandatory=True)
+		frappe.db.set_value("Print Job", job.name, "owner", "requester@example.com", update_modified=False)
+		self.addCleanup(frappe.delete_doc, "Print Job", job.name, force=True, ignore_permissions=True)
+		self.addCleanup(
+			setattr, frappe.flags, "ignore_print_permissions", frappe.flags.ignore_print_permissions
+		)
+		frappe.flags.ignore_print_permissions = True  # how QZ's agent renders a queued job
+		self.assertEqual(_printed_by(closing[0]), "requester@example.com")
+
+
+class TestZReportHtml80(FrappeTestCase):
+	def test_header_and_sections(self):
+		out = render_html(_report())
+		for text in (
+			"P051234567X",
+			"Till 1",
+			"Amina",
+			"Manager Mo",
+			"2026-10-31 08:00",
+			"2026-10-31 18:00",
+			"900.00",
+			"awaiting approval",
+			"Tax total",
+		):
+			self.assertIn(text, out)
+		_assert_in_order(out)
+		self.assertNotIn("Counted", out)
+		cp = [dict(_report()["cash_position"][0], counted=970.0, difference=-10.0)]
+		self.assertIn("Counted", render_html(_report(cash_position=cp)))
+
+	def test_escaped(self):
+		evil = "<script>alert(1)</script>"
+		out = render_html(_report(company=evil, cashier_name=evil, tax_id=evil))
+		self.assertNotIn("<script>", out)
+		self.assertIn("&lt;script&gt;", out)
+
+	def test_html_gate_matches_escpos(self):
+		from cecypo_frappe_reports.cecypo_frappe_reports.z_report import z_report_html
+
+		closing = frappe.get_all(
+			"POS Closing Entry", {"docstatus": 1}, ["name", "pos_opening_entry"], limit=1
+		)
+		if not closing:
+			raise unittest.SkipTest("no submitted POS Closing Entry on this site")
+		frappe.set_user("Administrator")
+		self.assertIn("Z REPORT", z_report_html(closing[0].pos_opening_entry))
+		email = "z-report-noprint@example.com"
+		self.addCleanup(TestZReportPage._drop_user, email)
+		frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "ZNoPrint", "send_welcome_email": 0}
+		).insert(ignore_permissions=True).add_roles("Sales User")
+		frappe.set_user(email)
+		with self.assertRaises(frappe.PermissionError):
+			z_report_html(closing[0].pos_opening_entry)
+
+	def test_print_format_renders(self):
+		closing = frappe.get_all("POS Closing Entry", {"docstatus": 1}, pluck="name", limit=1)
+		if not closing:
+			raise unittest.SkipTest("no submitted POS Closing Entry on this site")
+		frappe.set_user("Administrator")
+		html = frappe.get_print("POS Closing Entry", closing[0], "Z Report")
+		self.assertIn("Z REPORT", html)
+		self.assertIn("Cash position", html)
+
+
 class TestZReportPage(FrappeTestCase):
 	def test_html_shows_the_figures(self):
 		from unittest import mock
@@ -822,8 +947,7 @@ class TestZReportPage(FrappeTestCase):
 		self.assertIn("Tax total", out)
 		self.assertIn("Discounts (net of returns)", out)
 		self.assertNotIn("On credit", out)
-		at = [out.index(h) for h in HEADERS]
-		self.assertEqual(at, sorted(at))
+		_assert_in_order(out)
 
 		out = html(
 			_report(
