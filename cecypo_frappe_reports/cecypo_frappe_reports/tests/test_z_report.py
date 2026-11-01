@@ -1157,3 +1157,17 @@ class TestZReportPage(FrappeTestCase):
 			frappe.delete_doc("User Permission", p, force=True, ignore_permissions=True)
 		frappe.delete_doc("User", email, force=True, ignore_permissions=True)
 		frappe.db.commit()
+
+
+class TestZReportNeedsKlik(FrappeTestCase):
+	def test_shift_scope_refuses_without_klik_columns(self):
+		from unittest.mock import patch
+
+		opening = frappe.get_all("POS Opening Entry", pluck="name", limit=1)
+		if not opening:
+			raise unittest.SkipTest("no POS Opening Entry on this site")
+		with (
+			patch("cecypo_frappe_reports.cecypo_frappe_reports.z_report._has", return_value=False),
+			self.assertRaisesRegex(frappe.ValidationError, "klik_pos"),
+		):
+			build_z_report(opening_entry=opening[0])

@@ -64,6 +64,12 @@ def _has(doctype, column):
 
 
 def _shift_scope(name):
+	# Without klik's shift links on invoices and payments the shift would print as empty, not fail.
+	if not (
+		_has("Sales Invoice", "custom_pos_opening_entry")
+		and _has("Payment Entry", "custom_pos_opening_entry")
+	):
+		frappe.throw(_("The shift Z-report needs klik_pos. Use the day Z-report instead."))
 	opening = frappe.db.get_value(
 		"POS Opening Entry",
 		name,
@@ -78,7 +84,6 @@ def _shift_scope(name):
 		["name", "period_end_date"],
 		as_dict=True,
 	)
-	stamped = _has("Sales Invoice", "custom_pos_opening_entry")
 	return {
 		"scope": "shift",
 		"company": opening.company,
@@ -89,10 +94,8 @@ def _shift_scope(name):
 		"report_no": closing.name if closing else name,
 		"period_start": str(opening.period_start_date),
 		"period_end": str(closing.period_end_date if closing else now_datetime()),
-		"invoices": _invoices("si.custom_pos_opening_entry = %(shift)s", {"shift": name}) if stamped else [],
-		"payment_entries": _payment_entries("pe.custom_pos_opening_entry = %(shift)s", {"shift": name})
-		if _has("Payment Entry", "custom_pos_opening_entry")
-		else [],
+		"invoices": _invoices("si.custom_pos_opening_entry = %(shift)s", {"shift": name}),
+		"payment_entries": _payment_entries("pe.custom_pos_opening_entry = %(shift)s", {"shift": name}),
 		"expenses": _shift_expenses([name]),
 		"floats": _floats([name]),
 		"counted": _counted([closing.name] if closing else []),
