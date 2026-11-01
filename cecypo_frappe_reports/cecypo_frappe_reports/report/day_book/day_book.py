@@ -48,6 +48,12 @@ def get_columns(is_summarized=False, date_label=None):
 		money = {"fieldtype": "Float", "precision": 2, "width": 130}
 		return [
 			{"label": date_label, "fieldname": "date", "fieldtype": "Date", "width": 100},
+			{
+				"label": _("Warehouse"),
+				"fieldname": "warehouse",
+				"fieldtype": "Data",  # not Link: "Multiple" is not a warehouse
+				"width": 150,
+			},
 			{"label": _("Transaction"), "fieldname": "transaction", "fieldtype": "Data", "width": 170},
 			{"label": _("Count"), "fieldname": "count", "fieldtype": "Int", "width": 70},
 			{"label": _("Value"), "fieldname": "value", **money},
@@ -295,15 +301,25 @@ def _value_of(voucher_type, doc, gl_debit):
 	return flt(gl_debit)
 
 
+def warehouse_of(stock_warehouses, till_warehouse):
+	"""Where a voucher's stock moved; failing that, the klik till it was taken on; else blank."""
+	if len(stock_warehouses) > 1:
+		return _("Multiple")
+	if stock_warehouses:
+		return next(iter(stock_warehouses))
+	return till_warehouse or None
+
+
 def summarize(vouchers):
-	"""One row per (date, transaction) from per-voucher rows, then a total row. The total has no
-	Value: sales plus payouts adds up to nothing meaningful."""
+	"""One row per (date, warehouse, transaction) from per-voucher rows, then a total row. The total
+	has no Value: sales plus payouts adds up to nothing meaningful."""
 	groups = {}
 	for v in vouchers:
 		g = groups.setdefault(
-			(v["date"], v["transaction"]),
+			(v["date"], v.get("warehouse"), v["transaction"]),
 			{
 				"date": v["date"],
+				"warehouse": v.get("warehouse"),
 				"transaction": v["transaction"],
 				"count": 0,
 				"value": 0.0,
@@ -317,7 +333,13 @@ def summarize(vouchers):
 	order = {t: i for i, t in enumerate(TRANSACTION_ORDER)}
 	rows = sorted(
 		groups.values(),
-		key=lambda r: (r["date"] or "", order.get(r["transaction"], len(order)), r["transaction"]),
+		key=lambda r: (
+			r["date"] or "",
+			r["warehouse"] is None,  # payments and journals off any till go last
+			r["warehouse"] or "",
+			order.get(r["transaction"], len(order)),
+			r["transaction"],
+		),
 	)
 	for r in rows:
 		for k in ("value", "money_in", "money_out"):
@@ -368,19 +390,63 @@ def get_summarized_data(filters):
 			names.setdefault(v.voucher_type, set()).add(v.voucher_no)
 	docs = {}
 	for doctype, voucher_nos in names.items():
+		fields = ["name", *DOC_FIELDS[doctype]]
+		if doctype in SHIFT_LINKED and frappe.db.has_column(doctype, "custom_pos_opening_entry"):
+			fields.append("custom_pos_opening_entry")  # klik_pos: the shift it was taken on
 		for d in frappe.get_all(
-			doctype,
-			filters={"name": ("in", list(voucher_nos))},
-			fields=["name", *DOC_FIELDS[doctype]],
-			ignore_permissions=True,
+			doctype, filters={"name": ("in", list(voucher_nos))}, fields=fields, ignore_permissions=True
 		):
 			docs[(doctype, d.name)] = d
 
+	stock = _stock_warehouses({v.voucher_no for v in vouchers})
+	tills = _till_warehouses({d.get("custom_pos_opening_entry") for d in docs.values()} - {None, ""})
 	for v in vouchers:
 		doc = docs.get((v.voucher_type, v.voucher_no))
 		v.transaction = transaction_of(v.voucher_type, doc)
 		v.value = _value_of(v.voucher_type, doc, v.gl_debit)
+		v.warehouse = warehouse_of(
+			stock.get((v.voucher_type, v.voucher_no), set()),
+			tills.get((doc or {}).get("custom_pos_opening_entry")),
+		)
 	return summarize(vouchers)
+
+
+SHIFT_LINKED = ("Sales Invoice", "Payment Entry", "Journal Entry")
+
+
+def _stock_warehouses(voucher_nos):
+	"""(voucher_type, voucher_no) -> warehouses its stock moved through."""
+	out = {}
+	if not voucher_nos:
+		return out
+	sle = frappe.qb.DocType("Stock Ledger Entry")
+	for r in (
+		frappe.qb.from_(sle)
+		.select(sle.voucher_type, sle.voucher_no, sle.warehouse)
+		.distinct()
+		.where(sle.voucher_no.isin(list(voucher_nos)))
+		.where(sle.is_cancelled == 0)
+		.run(as_dict=True)
+	):
+		out.setdefault((r.voucher_type, r.voucher_no), set()).add(r.warehouse)
+	return out
+
+
+def _till_warehouses(opening_entries):
+	"""klik_pos shift (POS Opening Entry) -> its till's (POS Profile) warehouse."""
+	if not opening_entries:
+		return {}
+	poe = frappe.qb.DocType("POS Opening Entry")
+	pp = frappe.qb.DocType("POS Profile")
+	rows = (
+		frappe.qb.from_(poe)
+		.join(pp)
+		.on(pp.name == poe.pos_profile)
+		.select(poe.name, pp.warehouse)
+		.where(poe.name.isin(list(opening_entries)))
+		.run()
+	)
+	return dict(rows)
 
 
 def get_report_summary(data, is_summarized=False):
