@@ -644,7 +644,34 @@ def z_report_html(opening_entry: str) -> str:
 	return render_html(_closed_shift_report(opening_entry))
 
 
+def _printable(report: dict) -> dict:
+	"""The report as printed: zero lines dropped, so an all-zero section has nothing left and
+	the renderers skip it. Header, tender total and total balance always print."""
+
+	def nonzero(rows):
+		return [r for r in rows if flt(r["amount"], 2)]
+
+	r = dict(report)
+	r["users"] = [
+		dict(u, modes=nonzero(u["modes"]))
+		for u in report.get("users", [])
+		if flt(u.get("total"), 2) or flt(u.get("on_credit"), 2)
+	]
+	r["tenders"] = nonzero(report.get("tenders", []))
+	r["credit_collected"] = nonzero(report.get("credit_collected", []))
+	r["taxes"] = nonzero(report.get("taxes", []))
+	returns = report.get("returns") or {}
+	r["returns"] = dict(returns, modes=nonzero(returns.get("modes", [])))
+	r["cash_position"] = [
+		c
+		for c in report.get("cash_position", [])
+		if any(flt(c.get(k), 2) for k in ("opening", "in", "out", "expected", "counted"))
+	]
+	return r
+
+
 def render_html(report: dict) -> str:
+	report = _printable(report)
 	currency = (
 		frappe.db.get_value("Company", report["company"], "default_currency")
 		if report.get("company")
@@ -672,6 +699,7 @@ def _closed_shift_report(opening_entry: str) -> dict:
 
 def render_escpos(report: dict, width: int | None = None) -> str:
 	"""The slip as a str of latin-1 code points (one char per printer byte)."""
+	report = _printable(report)
 	if width is None:
 		try:
 			from cecypo_qz_extension.escpos import qz_columns
@@ -725,14 +753,15 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 	line(hr)
 
 	on_credit = _("On credit (not in totals)")
-	head(_("Sales by user"))
-	for u in report.get("users", []):
-		line(_row(u["full_name"] or u["user"], money(u["total"]), width))
-		for m in u["modes"]:
-			line(_row(f"  {m['mode']}", money(m["amount"]), width))
-		if u.get("on_credit"):
-			line(_row(f"  {on_credit}", money(u["on_credit"]), width))
-	line(hr)
+	if report["users"]:
+		head(_("Sales by user"))
+		for u in report["users"]:
+			line(_row(u["full_name"] or u["user"], money(u["total"]), width))
+			for m in u["modes"]:
+				line(_row(f"  {m['mode']}", money(m["amount"]), width))
+			if u.get("on_credit"):
+				line(_row(f"  {on_credit}", money(u["on_credit"]), width))
+		line(hr)
 
 	head(_("Tender types"))
 	pairs(report.get("tenders", []))
@@ -743,50 +772,60 @@ def render_escpos(report: dict, width: int | None = None) -> str:
 		line(_row(_("Written off"), money(report["written_off_total"]), width))
 	line(hr)
 
-	head(_("Credit collected / deposits"))
-	pairs(report.get("credit_collected", []))
-	line(_row(_("Total"), money(report.get("credit_total", 0)), width))
-	line(hr)
+	if report["credit_collected"]:
+		head(_("Credit collected / deposits"))
+		pairs(report["credit_collected"])
+		line(_row(_("Total"), money(report.get("credit_total", 0)), width))
+		line(hr)
 
-	returns = report.get("returns") or {}
-	head(_("Returns"))
-	line(_row(_("Count"), returns.get("count", 0), width))
-	pairs(returns.get("modes", []))
-	line(_row(_("Total"), money(returns.get("total", 0)), width))
-	line(hr)
+	returns = report["returns"]
+	if returns.get("count") or returns["modes"]:
+		head(_("Returns"))
+		line(_row(_("Count"), returns.get("count", 0), width))
+		pairs(returns["modes"])
+		line(_row(_("Total"), money(returns.get("total", 0)), width))
+		line(hr)
 
-	head(_("Discounts"))
-	line(_row(_("Discounts (net of returns)"), money(report.get("discount_total", 0)), width))
-	line(hr)
+	if flt(report.get("discount_total"), 2):
+		head(_("Discounts"))
+		line(_row(_("Discounts (net of returns)"), money(report["discount_total"]), width))
+		line(hr)
 
-	head(_("Tax"))
-	line(_row(_("Taxable total"), money(report.get("net_total", 0)), width))
-	for t in report.get("taxes", []):
-		line(_row(f"  {t['description']}", money(t["amount"]), width))
-	line(_row(_("Tax total"), money(report.get("tax_total", 0)), width))
-	line(_row(_("Grand total"), money(report.get("grand_total", 0)), width))
-	line(hr)
+	if flt(report.get("grand_total"), 2) or flt(report.get("tax_total"), 2):
+		head(_("Tax"))
+		line(_row(_("Taxable total"), money(report.get("net_total", 0)), width))
+		for t in report["taxes"]:
+			line(_row(f"  {t['description']}", money(t["amount"]), width))
+		if flt(report.get("tax_total"), 2):
+			line(_row(_("Tax total"), money(report["tax_total"]), width))
+		line(_row(_("Grand total"), money(report.get("grand_total", 0)), width))
+		line(hr)
 
-	head(_("Expenses"))
-	for e in report.get("expenses", []):
-		line(_row(e["label"] or e["name"], money(e["amount"]), width))
-		who = ": ".join(x for x in (e.get("user_name") or e.get("user"), e.get("note")) if x)
-		for part in textwrap.wrap(who, width, initial_indent="  ", subsequent_indent="  "):
-			line(part)
-		if e.get("pending"):
-			line(f"  ({_('awaiting approval')})")
-	line(_row(_("Total"), money(report.get("expense_total", 0)), width))
-	line(hr)
+	if report.get("expenses"):
+		head(_("Expenses"))
+		for e in report["expenses"]:
+			line(_row(e["label"] or e["name"], money(e["amount"]), width))
+			who = ": ".join(x for x in (e.get("user_name") or e.get("user"), e.get("note")) if x)
+			for part in textwrap.wrap(who, width, initial_indent="  ", subsequent_indent="  "):
+				line(part)
+			if e.get("pending"):
+				line(f"  ({_('awaiting approval')})")
+		line(_row(_("Total"), money(report.get("expense_total", 0)), width))
+		line(hr)
 
-	head(_("Cash position"))
-	for c in report.get("cash_position", []):
-		line(c["mode"][:width])
-		for label, key in (("Opening", "opening"), ("In", "in"), ("Out", "out"), ("Expected", "expected")):
-			line(_row(f"  {_(label)}", money(c[key]), width))
-		if c["counted"] is not None:
-			line(_row(f"  {_('Counted')}", money(c["counted"]), width))
-			line(_row(f"  {_('Diff')}", money(c["difference"]), width))
-	line(hr)
+	if report["cash_position"]:
+		head(_("Cash position"))
+		for c in report["cash_position"]:
+			line(c["mode"][:width])
+			for label, key in (("Opening", "opening"), ("In", "in"), ("Out", "out")):
+				if flt(c[key], 2):
+					line(_row(f"  {_(label)}", money(c[key]), width))
+			line(_row(f"  {_('Expected')}", money(c["expected"]), width))
+			if c["counted"] is not None:
+				line(_row(f"  {_('Counted')}", money(c["counted"]), width))
+				if flt(c["difference"], 2):
+					line(_row(f"  {_('Diff')}", money(c["difference"]), width))
+		line(hr)
 
 	line(f"{BOLD_ON}{_row(_('Total balance'), money(report.get('total_balance', 0)), width)}{BOLD_OFF}")
 	if report.get("excluded_invoices") or report.get("excluded_payment_entries"):

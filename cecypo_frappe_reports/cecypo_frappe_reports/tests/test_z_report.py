@@ -813,10 +813,71 @@ class TestZReportEscpos(FrappeTestCase):
 				first_doc=None,
 				last_doc=None,
 				sales_count=0,
+				discount_total=0.0,
+				net_total=0.0,
+				tax_total=0.0,
+				grand_total=0.0,
+				tax_id=None,
 			)
 		)
+		kept = ("Z REPORT", "Tender types", "Total balance")
 		for h in HEADERS:
-			self.assertIn(h, out)
+			(self.assertIn if h in kept else self.assertNotIn)(h, out)
+
+
+class TestZReportSkipsZeros(FrappeTestCase):
+	"""A zero line or an all-zero section is not printed, on either format."""
+
+	def zeros(self):
+		base = _report()
+		cash = dict(base["cash_position"][0], opening=0.0, counted=980.0, difference=0.0)
+		idle = dict(
+			base["cash_position"][0], mode="Cheque", opening=0.0, expected=0.0, counted=0.0, difference=0.0
+		)
+		idle["in"] = idle["out"] = 0.0
+		return _report(
+			users=[base["users"][0], dict(base["users"][0], full_name="Idle Ida", total=0.0, modes=[])],
+			tenders=[*base["tenders"], {"mode": "Bank Draft", "amount": 0.0}],
+			credit_collected=[{"mode": "M-Pesa", "amount": 0.0}],
+			credit_total=0.0,
+			returns={"count": 0, "modes": [{"mode": "Cash", "amount": 0.0}], "total": 0.0},
+			discount_total=0.0,
+			expenses=[],
+			expense_total=0.0,
+			cash_position=[cash, idle],
+		)
+
+	def check(self, out):
+		for gone in (
+			"Bank Draft",
+			"Idle Ida",
+			"Credit collected",
+			"Returns",
+			"Discounts",
+			"Expenses",
+			"Cheque",
+			"Opening",
+			"Diff",
+		):
+			self.assertNotIn(gone, out)
+		for kept in (
+			"Sales by user",
+			"Tender types",
+			"Tax",
+			"Cash position",
+			"Expected",
+			"Counted",
+			"In",
+			"Out",
+			"Total balance",
+		):
+			self.assertIn(kept, out)
+
+	def test_escpos(self):
+		self.check(render_escpos(self.zeros(), width=42))
+
+	def test_html(self):
+		self.check(render_html(self.zeros()))
 
 
 class TestZReportHeader(FrappeTestCase):
