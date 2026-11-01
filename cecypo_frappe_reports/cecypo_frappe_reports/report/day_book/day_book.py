@@ -4,7 +4,8 @@
 import frappe
 from frappe import _
 from frappe.utils import flt
-from pypika import CustomFunction, functions as fn
+from pypika import Case, CustomFunction
+from pypika import functions as fn
 
 CastDate = CustomFunction("DATE", ["value"])
 
@@ -44,32 +45,14 @@ def get_columns(is_summarized=False, date_label=None):
 		date_label = _("Posting Date")
 
 	if is_summarized:
+		money = {"fieldtype": "Float", "precision": 2, "width": 130}
 		return [
-			{
-				"label": date_label,
-				"fieldname": "date",
-				"fieldtype": "Date",
-				"width": 100,
-			},
-			{
-				"label": _("Voucher Type"),
-				"fieldname": "voucher_type",
-				"fieldtype": "Data",
-				"width": 160,
-			},
-			{
-				"label": _("Count"),
-				"fieldname": "count",
-				"fieldtype": "Int",
-				"width": 80,
-			},
-			{
-				"label": _("Amount"),
-				"fieldname": "amount",
-				"fieldtype": "Float",
-				"precision": 2,
-				"width": 150,
-			},
+			{"label": date_label, "fieldname": "date", "fieldtype": "Date", "width": 100},
+			{"label": _("Transaction"), "fieldname": "transaction", "fieldtype": "Data", "width": 170},
+			{"label": _("Count"), "fieldname": "count", "fieldtype": "Int", "width": 70},
+			{"label": _("Value"), "fieldname": "value", **money},
+			{"label": _("Money In"), "fieldname": "money_in", **money},
+			{"label": _("Money Out"), "fieldname": "money_out", **money},
 		]
 
 	return [
@@ -234,62 +217,170 @@ def get_data(filters):
 		total_credit += row["credit"]
 
 	if data:
-		data.append({
-			"date": None,
-			"voucher_type": _("Total"),
-			"voucher_no": None,
-			"party_type": None,
-			"party": None,
-			"account": None,
-			"debit": flt(total_debit, 2),
-			"credit": flt(total_credit, 2),
-			"against": None,
-			"remarks": None,
-			"cost_center": None,
-			"bold": 1,
-		})
+		data.append(
+			{
+				"date": None,
+				"voucher_type": _("Total"),
+				"voucher_no": None,
+				"party_type": None,
+				"party": None,
+				"account": None,
+				"debit": flt(total_debit, 2),
+				"credit": flt(total_credit, 2),
+				"against": None,
+				"remarks": None,
+				"cost_center": None,
+				"bold": 1,
+			}
+		)
 
 	return data
+
+
+# Sales first, then money received/paid, purchases, then journals and anything else (by name).
+TRANSACTION_ORDER = [
+	"Sales",
+	"Sales Returns",
+	"Received",
+	"Paid Out",
+	"Internal Transfer",
+	"Purchases",
+	"Purchase Returns",
+	"Delivery Note",
+	"Delivery Note Returns",
+	"Purchase Receipt",
+	"Purchase Receipt Returns",
+]
+# Per voucher type: the fields that say which transaction it is and what it is worth.
+DOC_FIELDS = {
+	"Sales Invoice": ["is_return", "base_grand_total"],
+	"Purchase Invoice": ["is_return", "base_grand_total"],
+	"Delivery Note": ["is_return", "base_grand_total"],
+	"Purchase Receipt": ["is_return", "base_grand_total"],
+	"Payment Entry": ["payment_type", "base_paid_amount", "base_received_amount"],
+	"Journal Entry": ["voucher_type", "total_debit"],
+}
+RETURNABLE = {
+	"Sales Invoice": ("Sales", "Sales Returns"),
+	"Purchase Invoice": ("Purchases", "Purchase Returns"),
+	"Delivery Note": ("Delivery Note", "Delivery Note Returns"),
+	"Purchase Receipt": ("Purchase Receipt", "Purchase Receipt Returns"),
+}
+PAYMENT_TYPES = {"Receive": "Received", "Pay": "Paid Out", "Internal Transfer": "Internal Transfer"}
+
+
+def transaction_of(voucher_type, doc):
+	"""The summary row a voucher falls in."""
+	doc = doc or {}
+	if voucher_type in RETURNABLE:
+		return RETURNABLE[voucher_type][1 if doc.get("is_return") else 0]
+	if voucher_type == "Payment Entry":
+		return PAYMENT_TYPES.get(doc.get("payment_type"), voucher_type)
+	if voucher_type == "Journal Entry":
+		return doc.get("voucher_type") or voucher_type
+	return voucher_type
+
+
+def _value_of(voucher_type, doc, gl_debit):
+	"""The document's own total in company currency; for types without one, its GL debits."""
+	if not doc:
+		return flt(gl_debit)
+	if voucher_type in RETURNABLE:
+		return flt(doc.get("base_grand_total"))
+	if voucher_type == "Payment Entry":
+		field = "base_received_amount" if doc.get("payment_type") == "Receive" else "base_paid_amount"
+		return flt(doc.get(field))
+	if voucher_type == "Journal Entry":
+		return flt(doc.get("total_debit"))
+	return flt(gl_debit)
+
+
+def summarize(vouchers):
+	"""One row per (date, transaction) from per-voucher rows, then a total row. The total has no
+	Value: sales plus payouts adds up to nothing meaningful."""
+	groups = {}
+	for v in vouchers:
+		g = groups.setdefault(
+			(v["date"], v["transaction"]),
+			{
+				"date": v["date"],
+				"transaction": v["transaction"],
+				"count": 0,
+				"value": 0.0,
+				"money_in": 0.0,
+				"money_out": 0.0,
+			},
+		)
+		g["count"] += 1
+		for k in ("value", "money_in", "money_out"):
+			g[k] += flt(v[k])
+	order = {t: i for i, t in enumerate(TRANSACTION_ORDER)}
+	rows = sorted(
+		groups.values(),
+		key=lambda r: (r["date"] or "", order.get(r["transaction"], len(order)), r["transaction"]),
+	)
+	for r in rows:
+		for k in ("value", "money_in", "money_out"):
+			r[k] = flt(r[k], 2)
+	if rows:
+		rows.append(
+			{
+				"date": None,
+				"transaction": _("Total"),
+				"count": sum(r["count"] for r in rows),
+				"value": None,
+				"money_in": flt(sum(r["money_in"] for r in rows), 2),
+				"money_out": flt(sum(r["money_out"] for r in rows), 2),
+				"bold": 1,
+			}
+		)
+	return rows
 
 
 def get_summarized_data(filters):
+	"""Vouchers in scope from the GL (so every filter still applies), each valued from its own
+	document; Money In/Out is its debit/credit on Cash and Bank accounts."""
 	gle = frappe.qb.DocType("GL Entry")
+	acc = frappe.qb.DocType("Account")
 	date_field = _get_date_field(gle, filters)
+	cash = acc.account_type.isin(["Cash", "Bank"])
 
 	query = (
 		frappe.qb.from_(gle)
+		.left_join(acc)
+		.on(acc.name == gle.account)
 		.select(
 			date_field.as_("date"),
 			gle.voucher_type,
-			fn.Count(gle.voucher_no).distinct().as_("count"),
-			fn.Sum(gle.debit).as_("amount"),
+			gle.voucher_no,
+			fn.Sum(gle.debit).as_("gl_debit"),
+			fn.Sum(Case().when(cash, gle.debit).else_(0)).as_("money_in"),
+			fn.Sum(Case().when(cash, gle.credit).else_(0)).as_("money_out"),
 		)
 		.where(gle.is_cancelled == 0)
-		.groupby(date_field, gle.voucher_type)
-		.orderby(date_field)
-		.orderby(gle.voucher_type)
+		.groupby(date_field, gle.voucher_type, gle.voucher_no)
 	)
+	vouchers = _apply_common_filters(query, gle, filters).run(as_dict=True)
 
-	query = _apply_common_filters(query, gle, filters)
-	data = query.run(as_dict=True)
+	names = {}
+	for v in vouchers:
+		if v.voucher_type in DOC_FIELDS:
+			names.setdefault(v.voucher_type, set()).add(v.voucher_no)
+	docs = {}
+	for doctype, voucher_nos in names.items():
+		for d in frappe.get_all(
+			doctype,
+			filters={"name": ("in", list(voucher_nos))},
+			fields=["name", *DOC_FIELDS[doctype]],
+			ignore_permissions=True,
+		):
+			docs[(doctype, d.name)] = d
 
-	total_amount = 0.0
-	total_count = 0
-	for row in data:
-		row["amount"] = flt(row["amount"], 2)
-		total_amount += row["amount"]
-		total_count += row.get("count", 0)
-
-	if data:
-		data.append({
-			"date": None,
-			"voucher_type": _("Total"),
-			"count": total_count,
-			"amount": flt(total_amount, 2),
-			"bold": 1,
-		})
-
-	return data
+	for v in vouchers:
+		doc = docs.get((v.voucher_type, v.voucher_no))
+		v.transaction = transaction_of(v.voucher_type, doc)
+		v.value = _value_of(v.voucher_type, doc, v.gl_debit)
+	return summarize(vouchers)
 
 
 def get_report_summary(data, is_summarized=False):
@@ -299,20 +390,28 @@ def get_report_summary(data, is_summarized=False):
 		return []
 
 	if is_summarized:
-		total_amount = sum(flt(d.get("amount")) for d in rows)
-		total_count = sum(d.get("count", 0) for d in rows)
+
+		def value_of(transaction):
+			return flt(sum(flt(d["value"]) for d in rows if d["transaction"] == transaction), 2)
+
+		money_in = flt(sum(d["money_in"] for d in rows), 2)
+		money_out = flt(sum(d["money_out"] for d in rows), 2)
+		net = flt(money_in - money_out, 2)
 		return [
+			{"value": value_of("Sales"), "label": _("Sales"), "datatype": "Float", "indicator": "Blue"},
 			{
-				"value": total_amount,
-				"label": _("Total Amount"),
+				"value": value_of("Sales Returns"),
+				"label": _("Returns"),
 				"datatype": "Float",
-				"indicator": "Blue",
+				"indicator": "Orange",
 			},
+			{"value": money_in, "label": _("Money In"), "datatype": "Float", "indicator": "Green"},
+			{"value": money_out, "label": _("Money Out"), "datatype": "Float", "indicator": "Red"},
 			{
-				"value": total_count,
-				"label": _("Transaction Count"),
-				"datatype": "Int",
-				"indicator": "Blue",
+				"value": net,
+				"label": _("Net Cash"),
+				"datatype": "Float",
+				"indicator": "Green" if net >= 0 else "Red",
 			},
 		]
 
