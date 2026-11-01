@@ -261,7 +261,7 @@ def get_summarized_data(filters):
 		.select(
 			date_field.as_("date"),
 			gle.voucher_type,
-			fn.CountDistinct(gle.voucher_no).as_("count"),
+			fn.Count(gle.voucher_no).distinct().as_("count"),
 			fn.Sum(gle.debit).as_("amount"),
 		)
 		.where(gle.is_cancelled == 0)
