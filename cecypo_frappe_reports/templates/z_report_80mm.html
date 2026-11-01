@@ -46,6 +46,7 @@ the ESC/POS slip; one column of label/amount rows, so nothing is cut on the roll
 		{{ row(_("Printed on"), (R.printed_at or "")[:16]) }}
 	</table>
 
+	{%- if R.users %}
 	<h4>{{ _("Sales by user") }}</h4>
 	<table>
 		{%- for u in R.users %}
@@ -54,6 +55,7 @@ the ESC/POS slip; one column of label/amount rows, so nothing is cut on the roll
 		{%- if u.on_credit %}{{ row(_("On credit (not in totals)"), money(u.on_credit), "ind muted") }}{% endif %}
 		{%- endfor %}
 	</table>
+	{%- endif %}
 
 	<h4>{{ _("Tender types") }}</h4>
 	<table>
@@ -63,30 +65,39 @@ the ESC/POS slip; one column of label/amount rows, so nothing is cut on the roll
 		{%- if R.written_off_total %}{{ row(_("Written off"), money(R.written_off_total), "muted") }}{% endif %}
 	</table>
 
+	{%- if R.credit_collected %}
 	<h4>{{ _("Credit collected / deposits") }}</h4>
 	<table>
 		{%- for t in R.credit_collected %}{{ row(t.mode, money(t.amount)) }}{% endfor %}
 		{{ row(_("Total"), money(R.credit_total), "tot") }}
 	</table>
+	{%- endif %}
 
+	{%- if R.returns.count or R.returns.modes %}
 	<h4>{{ _("Returns") }}</h4>
 	<table>
 		{{ row(_("Count"), R.returns.count) }}
 		{%- for t in R.returns.modes %}{{ row(t.mode, money(t.amount)) }}{% endfor %}
 		{{ row(_("Total"), money(R.returns.total), "tot") }}
 	</table>
+	{%- endif %}
 
+	{%- if R.discount_total %}
 	<h4>{{ _("Discounts") }}</h4>
 	<table>{{ row(_("Discounts (net of returns)"), money(R.discount_total)) }}</table>
+	{%- endif %}
 
+	{%- if R.grand_total or R.tax_total %}
 	<h4>{{ _("Tax") }}</h4>
 	<table>
 		{{ row(_("Taxable total"), money(R.net_total)) }}
 		{%- for t in R.taxes %}{{ row(t.description, money(t.amount), "ind") }}{% endfor %}
-		{{ row(_("Tax total"), money(R.tax_total)) }}
+		{%- if R.tax_total %}{{ row(_("Tax total"), money(R.tax_total)) }}{% endif %}
 		{{ row(_("Grand total"), money(R.grand_total), "tot") }}
 	</table>
+	{%- endif %}
 
+	{%- if R.expenses %}
 	<h4>{{ _("Expenses") }}</h4>
 	<table>
 		{%- for e in R.expenses %}
@@ -96,21 +107,24 @@ the ESC/POS slip; one column of label/amount rows, so nothing is cut on the roll
 		{%- endfor %}
 		{{ row(_("Total"), money(R.expense_total), "tot") }}
 	</table>
+	{%- endif %}
 
+	{%- if R.cash_position %}
 	<h4>{{ _("Cash position") }}</h4>
 	<table>
 		{%- for c in R.cash_position %}
 		{{ row(c.mode, "", "b") }}
-		{{ row(_("Opening"), money(c.opening), "ind") }}
-		{{ row(_("In"), money(c["in"]), "ind") }}
-		{{ row(_("Out"), money(c.out), "ind") }}
+		{%- if c.opening %}{{ row(_("Opening"), money(c.opening), "ind") }}{% endif %}
+		{%- if c["in"] %}{{ row(_("In"), money(c["in"]), "ind") }}{% endif %}
+		{%- if c.out %}{{ row(_("Out"), money(c.out), "ind") }}{% endif %}
 		{{ row(_("Expected"), money(c.expected), "ind") }}
 		{%- if c.counted is not none %}
 		{{ row(_("Counted"), money(c.counted), "ind") }}
-		{{ row(_("Diff"), money(c.difference), "ind b") }}
+		{%- if c.difference %}{{ row(_("Diff"), money(c.difference), "ind b") }}{% endif %}
 		{%- endif %}
 		{%- endfor %}
 	</table>
+	{%- endif %}
 
 	<table style="margin-top: 6px;">{{ row(_("Total balance"), money(R.total_balance), "grand") }}</table>
 
