@@ -30,8 +30,13 @@
 		return format_currency(v || 0, snap.currency);
 	}
 
+	// Oldest first, by invoice date then number. Change ORDER to sort differently.
+	const ORDER = (a, b) =>
+		String(a.posting_date || "").localeCompare(String(b.posting_date || "")) ||
+		String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true });
+
 	function cells(snap) {
-		return (snap.invoices || []).map((r) => COLUMNS.map((c) => String(c.value(r, snap) ?? "")));
+		return [...(snap.invoices || [])].sort(ORDER).map((r) => COLUMNS.map((c) => String(c.value(r, snap) ?? "")));
 	}
 
 	function text_table(snap) {

@@ -90,3 +90,11 @@ test("missing_values", () => {
 	const text = ps.text(snap({ invoices: [{ name: "SINV-0003", posting_date: null, due_date: null, days_overdue: 0, grand_total: null, paid: undefined, outstanding_amount: 0 }] }));
 	for (const bad of ["undefined", "NaN", "null"]) assert.ok(!text.includes(bad), `text contains ${bad}`);
 });
+
+test("invoices_sorted_by_date_then_number", () => {
+	// Both dialogs must copy the same text; their data arrives in different orders.
+	const inv = (name, posting_date) => ({ name, posting_date, grand_total: 1, paid: 0, outstanding_amount: 1 });
+	const text = ps.text(snap({ invoices: [inv("INV-9", "2026-07-20"), inv("INV-5", "2026-07-20"), inv("INV-1", "2026-07-06")] }));
+	const order = text.split("\n").filter((l) => l.includes("INV-")).map((l) => l.match(/INV-\d/)[0]);
+	assert.deepEqual(order, ["INV-1", "INV-5", "INV-9"]);
+});
