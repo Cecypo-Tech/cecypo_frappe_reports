@@ -3,6 +3,8 @@
 
 // A fetch that has not answered by then is treated as lost: the panel offers Retry.
 const FETCH_TIMEOUT_MS = 20000;
+// Site Client Script that formats the party statement (cecypo_frappe_reports/party_statement.py).
+const STATEMENT_SCRIPT = "Party Statement - Copy and Email";
 
 const _ICONS = {
 	copy:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
@@ -1597,26 +1599,14 @@ class TransactionHistoryPage {
 			const party_type = $wrap.data("party-type");
 			const company = $wrap.data("company");
 			const as_of_date = $wrap.data("as-of");
-			const is_customer = party_type === "customer";
-			const $dc = $(m).find(
-				is_customer
-					? `.recv-detail-content[data-for="${party}"]`
-					: `.pay-detail-content[data-for="${party}"]`
-			);
-			const existing = $dc.data("rows");
-			if (existing) {
-				this._copy_party_text(party_type, party, company, as_of_date, existing);
-			} else {
-				const method = is_customer
-					? "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_receivables_detail"
-					: "cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_payables_detail";
-				const args = is_customer
-					? { customer: party, company, as_of_date }
-					: { supplier: party, company, as_of_date };
-				frappe.call({ method, args, callback: (r) => {
-					this._copy_party_text(party_type, party, company, as_of_date, r.message || []);
-				}});
-			}
+			const state = party_type === "customer" ? this._recv_state : this._pay_state;
+			// Same data and script as the party dialog, so the row copy matches it exactly.
+			const snap = frappe
+				.xcall("cecypo_frappe_reports.cecypo_frappe_reports.page.transaction_history.transaction_history.get_party_details", {
+					party_type, party, company, as_of_date, show_future_payments: state.show_future_payments ? 1 : 0,
+				})
+				.then((d) => this._statement_snap(party_type, party, company, as_of_date, d || {}));
+			this._statement_copy_text(party_type, snap);
 		});
 
 		$(m).on("click", ".btn-copy-link", (e) => {
@@ -2130,30 +2120,6 @@ class TransactionHistoryPage {
 			</div>`;
 	}
 
-	_copy_party_text(party_type, party, company, as_of_date, detail_rows) {
-		const is_customer = party_type === "customer";
-		const header = [
-			`Transaction List`,
-			`${is_customer ? "Customer" : "Supplier"}: ${party}`,
-			`Company: ${company}`,
-			`As Of: ${frappe.datetime.str_to_user(as_of_date)}`,
-			``,
-			`Invoice No.       Due Date               Amount`,
-			`──────────────────────────────────────────────────`,
-		];
-		const body = detail_rows.map(r => {
-			const due = r.due_date ? frappe.datetime.str_to_user(r.due_date) : "—";
-			const overdue = r.days_overdue > 0 ? ` (+${r.days_overdue})` : "";
-			return `${(r.voucher_no || "").padEnd(18)}${(due + overdue).padEnd(22)}${format_number(r.outstanding_amount, null, 2).padStart(14)}`;
-		});
-		const total = detail_rows.reduce((s, r) => s + (r.outstanding_amount || 0), 0);
-		const footer = [``, `Total Outstanding: ${format_number(total, null, 2)}`];
-		const text = [...header, ...body, ...footer].join("\n");
-		navigator.clipboard.writeText(text).then(() => {
-			frappe.show_alert({ message: __("Copied to clipboard"), indicator: "green" });
-		}).catch(() => frappe.msgprint(__("Clipboard not available")));
-	}
-
 	_copy_party_link(tab, party_type, party) {
 		const url = `${window.location.origin}/app/transaction-history?tab=${tab}&${party_type}=${encodeURIComponent(party)}`;
 		navigator.clipboard.writeText(url).then(() => {
@@ -2378,15 +2344,19 @@ class TransactionHistoryPage {
 				}
 				if (d.payment_terms && is_customer) contact += `<div class="text-muted">${__("Payment Terms")}: ${d.payment_terms}</div>`;
 
+				const snap = this._statement_snap(party_type, party, company, as_of_date, d);
 				const dialog = new frappe.ui.Dialog({
 					title: d.customer_name || party,
 					indicator: d.overdue_count ? "red" : "blue",
 					size: "large",
 					primary_action_label: __("Email {0}", [is_customer ? __("Customer") : __("Supplier")]),
-					primary_action: () => this._email_party_snapshot(party_type, party, d, bc),
+					primary_action: () => this._statement_email(party_type, party, d, snap),
 					secondary_action_label: __("Copy to Clipboard"),
-					secondary_action: () => this._copy_party_snapshot(d, bc),
+					secondary_action: () => this._statement_copy_text(party_type, Promise.resolve(snap)),
 				});
+				dialog.add_custom_action(__("Copy as Image"), () =>
+					this._statement_copy_image(party_type, Promise.resolve(snap), `${party} statement`)
+				);
 				dialog.add_custom_action(__("Close"), () => dialog.hide());
 				dialog.$body.html(`<div style="padding:4px 0">
 					${cards}
@@ -2400,44 +2370,148 @@ class TransactionHistoryPage {
 		});
 	}
 
-	_party_snapshot_text(d, bc) {
-		const pad = (s, n) => { s = String(s == null ? "" : s); return s + " ".repeat(Math.max(0, n - s.length)); };
-		const money = (v) => format_currency(v || 0, bc);
-		const sep = "-".repeat(72);
-		const lines = [`Dear ${d.customer_name || ""},`, ""];
-		if ((d.invoices || []).length) {
-			lines.push("Your account currently shows the following outstanding invoices:");
-			lines.push(pad("Invoice", 22) + pad("Due Date", 14) + pad("Days Overdue", 14) + "Outstanding");
-			lines.push(sep);
-			d.invoices.forEach((r) => lines.push(pad(r.voucher_no, 22) + pad(r.due_date ? frappe.datetime.str_to_user(r.due_date) : "", 14) + pad(r.days_overdue || 0, 14) + money(r.outstanding_amount)));
-			lines.push(sep);
-			lines.push("Total Outstanding: " + money(d.outstanding_total));
-		} else {
-			lines.push("Your account has no outstanding invoices.");
-		}
-		if ((d.advances || []).length) {
-			lines.push("", "Unallocated payments on your account:");
-			d.advances.forEach((a) => lines.push(pad(a.name, 22) + pad(frappe.datetime.str_to_user(a.posting_date), 14) + money(a.unallocated_amount)));
-			lines.push("Net position: " + money(d.net_position));
-		}
-		lines.push("", d.overdue_count ? "Kindly arrange for payment at your earliest convenience." : "Thank you for your business.");
-		return lines.join("\n");
+	// ── Party statement (site Client Script) ─────────────────────────────────
+	// Copy, Email and Copy as Image all format through the site's statement script, so a
+	// site changes its columns in one place. See client_scripts/party_statement.js.
+
+	_statement_snap(party_type, party, company, as_of_date, d) {
+		return {
+			party_type: party_type === "customer" ? "Customer" : "Supplier",
+			party,
+			party_name: d.customer_name || party,
+			company,
+			as_of_date,
+			currency: this.base_currency,
+			invoices: (d.invoices || []).map((r) => ({
+				name: r.voucher_no,
+				posting_date: r.date,
+				due_date: r.due_date,
+				days_overdue: r.days_overdue || 0,
+				grand_total: r.grand_total,
+				paid: r.paid,
+				outstanding_amount: r.outstanding_amount,
+			})),
+			outstanding_total: d.outstanding_total,
+			overdue_count: d.overdue_count,
+			overdue_total: d.overdue_total,
+			advances: (d.advances || []).map((a) => ({
+				name: a.name,
+				posting_date: a.posting_date,
+				paid_amount: a.paid_amount,
+				unallocated_amount: a.unallocated_amount,
+			})),
+			advances_total: d.advances_total,
+			net_position: d.net_position,
+			payment_terms: d.payment_terms,
+			credit_limit: d.credit_limit,
+		};
 	}
 
-	_copy_party_snapshot(d, bc) {
-		navigator.clipboard.writeText(this._party_snapshot_text(d, bc)).then(() => {
-			frappe.show_alert({ message: __("Copied to clipboard"), indicator: "green" });
-		});
+	// Resolves to cecypo.party_statement. Fetched on every use so an edit applies without a
+	// reload. Every failure is reported here and rejects with `silent`, so callers only
+	// report their own (clipboard) failures.
+	_statement(party_type) {
+		const silent = () => Object.assign(new Error("party statement unavailable"), { silent: true });
+		return frappe
+			.xcall("cecypo_frappe_reports.party_statement.get_party_statement_script", {
+				party_type: party_type === "customer" ? "Customer" : "Supplier",
+			})
+			.catch(() => { throw silent(); }) // frappe has already shown the server's error
+			.then((source) => {
+				if (!source) {
+					frappe.show_alert({
+						message: __("Statement script is missing or disabled: Client Script '{0}'", [STATEMENT_SCRIPT]),
+						indicator: "orange",
+					}, 7);
+					throw silent();
+				}
+				return this._statement_run(() => {
+					if (window.cecypo) delete window.cecypo.party_statement; // never fall back to a stale copy
+					new Function(source)();
+					const ps = window.cecypo && window.cecypo.party_statement;
+					if (!ps || typeof ps.text !== "function" || typeof ps.image !== "function") {
+						throw new Error(__("The script did not register cecypo.party_statement with text() and image()."));
+					}
+					return ps;
+				});
+			});
 	}
 
-	_email_party_snapshot(party_type, party, d, bc) {
-		const doctype = party_type === "customer" ? "Customer" : "Supplier";
-		new frappe.views.CommunicationComposer({
-			doc: { doctype, name: party },
-			subject: __("Account statement — {0}: {1} outstanding", [d.customer_name || party, format_currency(d.outstanding_total || 0, bc)]),
-			recipients: d.primary_email || "",
-			message: `<pre style="font-family:inherit;white-space:pre-wrap">${frappe.utils.escape_html(this._party_snapshot_text(d, bc))}</pre>`,
-		});
+	// Runs site-script code; a throw or rejection becomes a red message naming the script.
+	_statement_run(fn) {
+		const report = (e) => {
+			frappe.msgprint({
+				title: __("Statement script error"),
+				indicator: "red",
+				message: __("Client Script '{0}' failed: {1}", [STATEMENT_SCRIPT, frappe.utils.escape_html(String((e && e.message) || e))]),
+			});
+			throw Object.assign(new Error("party statement failed"), { silent: true });
+		};
+		try {
+			return Promise.resolve(fn()).catch(report);
+		} catch (e) {
+			return Promise.reject(e).catch(report);
+		}
+	}
+
+	// The clipboard write must start inside the click (Safari), so it is handed the pending
+	// text rather than waiting for the script and data to arrive.
+	_statement_copy_text(party_type, snap_promise) {
+		const text = Promise.all([this._statement(party_type), snap_promise])
+			.then(([ps, snap]) => this._statement_run(() => ps.text(snap)));
+		let written;
+		try {
+			written = typeof ClipboardItem === "undefined"
+				? text.then((t) => navigator.clipboard.writeText(t))
+				: navigator.clipboard.write([new ClipboardItem({ "text/plain": text.then((t) => new Blob([t], { type: "text/plain" })) })]);
+		} catch (e) {
+			written = Promise.reject(e);
+		}
+		written
+			.then(() => frappe.show_alert({ message: __("Copied to clipboard"), indicator: "green" }))
+			// A failure in `text` was reported already; only a refused clipboard is new.
+			.catch(() => text.then(() => frappe.msgprint(__("Clipboard not available")), () => {}));
+	}
+
+	_statement_copy_image(party_type, snap_promise, filename) {
+		if (this._statement_image_busy) return;
+		this._statement_image_busy = true;
+		const png = Promise.all([this._statement(party_type), snap_promise])
+			.then(([ps, snap]) => this._statement_run(() => ps.image(snap)));
+		let written;
+		try {
+			written = navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+		} catch (e) {
+			written = Promise.reject(e);
+		}
+		written
+			.then(() => frappe.show_alert({ message: __("Image copied"), indicator: "green" }))
+			.catch(() =>
+				// The browser refused the image (older browser, or the tab lost focus): download it.
+				png.then((blob) => {
+					const a = document.createElement("a");
+					a.href = URL.createObjectURL(blob);
+					a.download = `${filename.replace(/[\\/:*?"<>|]+/g, "-")}.png`;
+					a.click();
+					setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+					frappe.show_alert({ message: __("Could not copy the image, so it was downloaded instead"), indicator: "orange" });
+				}, () => {})
+			)
+			.finally(() => { this._statement_image_busy = false; });
+	}
+
+	_statement_email(party_type, party, d, snap) {
+		this._statement(party_type)
+			.then((ps) => this._statement_run(() => ps.text(snap)))
+			.then((text) => {
+				new frappe.views.CommunicationComposer({
+					doc: { doctype: party_type === "customer" ? "Customer" : "Supplier", name: party },
+					subject: __("Account statement — {0}: {1} outstanding", [d.customer_name || party, format_currency(d.outstanding_total || 0, this.base_currency)]),
+					recipients: d.primary_email || "",
+					message: `<pre style="font-family:inherit;white-space:pre-wrap">${frappe.utils.escape_html(text)}</pre>`,
+				});
+			})
+			.catch(() => {});
 	}
 
 	// ── Payables ──────────────────────────────────────────────────────────────
