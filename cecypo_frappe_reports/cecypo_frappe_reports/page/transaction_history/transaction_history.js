@@ -2357,6 +2357,8 @@ class TransactionHistoryPage {
 				dialog.add_custom_action(__("Copy as Image"), () =>
 					this._statement_copy_image(party_type, Promise.resolve(snap), `${party} statement`)
 				);
+				// Keep the three statement actions together on the right, Close on its own.
+				dialog.custom_actions.find("button").last().addClass("mr-2").insertBefore(dialog.get_secondary_btn());
 				dialog.add_custom_action(__("Close"), () => dialog.hide());
 				dialog.$body.html(`<div style="padding:4px 0">
 					${cards}
