@@ -2470,7 +2470,21 @@ class TransactionHistoryPage {
 		written
 			.then(() => frappe.show_alert({ message: __("Copied to clipboard"), indicator: "green" }))
 			// A failure in `text` was reported already; only a refused clipboard is new.
-			.catch(() => text.then(() => frappe.msgprint(__("Clipboard not available")), () => {}));
+			.catch(() => text.then((t) => this._statement_manual_copy(t), () => {}));
+	}
+
+	// The browser refused the clipboard (plain-http site, older browser, tab lost focus):
+	// show the text, selected, so the user can copy it by hand.
+	_statement_manual_copy(text) {
+		const d = frappe.msgprint({
+			title: __("Copy the statement"),
+			message: `<p class="text-muted">${__("The browser did not allow copying. Press Ctrl+C (Cmd+C on a Mac) to copy the selected text.")}</p>
+				<textarea class="form-control party-statement-manual" readonly rows="14" style="font-family:var(--font-family-monospace, monospace);font-size:12px">${frappe.utils.escape_html(text)}</textarea>`,
+		});
+		// The dialog moves focus to itself once it has opened; select after that.
+		const select = () => d.$wrapper.find("textarea.party-statement-manual").trigger("focus").trigger("select");
+		d.$wrapper.one("shown.bs.modal", () => setTimeout(select, 50));
+		setTimeout(select, 700);
 	}
 
 	_statement_copy_image(party_type, snap_promise, filename) {
@@ -2492,7 +2506,10 @@ class TransactionHistoryPage {
 					const a = document.createElement("a");
 					a.href = URL.createObjectURL(blob);
 					a.download = `${filename.replace(/[\\/:*?"<>|]+/g, "-")}.png`;
+					// Older Firefox ignores a click on a link that is not in the page.
+					document.body.appendChild(a);
 					a.click();
+					a.remove();
 					setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 					frappe.show_alert({ message: __("Could not copy the image, so it was downloaded instead"), indicator: "orange" });
 				}, () => {})
