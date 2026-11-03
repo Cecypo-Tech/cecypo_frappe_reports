@@ -112,6 +112,8 @@ jinja = {
 
 # before_install = "cecypo_frappe_reports.install.before_install"
 # after_install = "cecypo_frappe_reports.install.after_install"
+after_install = ["cecypo_frappe_reports.party_statement.seed_client_script"]
+after_migrate = ["cecypo_frappe_reports.party_statement.seed_client_script"]
 
 # Uninstallation
 # ------------
