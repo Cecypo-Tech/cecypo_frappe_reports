@@ -44,6 +44,8 @@
 				party: resolve_customer(report),
 				party_type: "customer",
 				as_of_date: report.get_filter_value("report_date"),
+				// Both AR reports have this filter; the statement follows it, not the PSOA template.
+				show_future_payments: report.get_filter_value("show_future_payments", false) ? 1 : 0,
 			});
 		});
 	}

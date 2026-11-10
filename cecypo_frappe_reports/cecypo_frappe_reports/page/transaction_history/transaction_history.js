@@ -2201,11 +2201,15 @@ class TransactionHistoryPage {
 	}
 
 	_open_statement_dialog(party_type, party, company, as_of_date) {
+		const state = party_type === "customer" ? this._recv_state : this._pay_state;
 		cecypo_reports.statement.open({
 			party,
 			party_type,
 			company,
 			as_of_date,
+			// The value the table was loaded with, so the statement matches what is on screen rather
+			// than whatever the PSOA template was saved with.
+			show_future_payments: state?.show_future_payments ? 1 : 0,
 			// Supplied only from here: the query reports have no transaction list to offer, so their
 			// dialog shows no Document selector at all.
 			transaction_list: {

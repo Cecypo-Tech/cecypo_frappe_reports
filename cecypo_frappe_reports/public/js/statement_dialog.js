@@ -35,6 +35,7 @@
 		 * @param {string}  [opts.party]             prefilled and locked when known
 		 * @param {string}  [opts.party_type]        "customer" (default) or "supplier"
 		 * @param {string}  [opts.as_of_date]
+		 * @param {0|1}     [opts.show_future_payments] overrides the template's own setting; omit to keep it
 		 * @param {object}  [opts.transaction_list]  {label, get_html(ctx), download(html, ctx),
 		 *                                            send(html, ctx, {recipient, cc, bcc})}
 		 */
@@ -328,6 +329,8 @@
 				as_of_date: ctx.as_of_date,
 			};
 			if (ctx.from_date) args.from_date = ctx.from_date;
+			if (this.opts.show_future_payments != null)
+				args.show_future_payments = this.opts.show_future_payments ? 1 : 0;
 			return args;
 		}
 
