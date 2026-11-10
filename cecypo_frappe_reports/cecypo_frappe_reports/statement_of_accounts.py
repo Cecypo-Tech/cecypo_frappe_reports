@@ -17,7 +17,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import add_months, getdate, now_datetime, today
+from frappe.utils import add_months, cint, getdate, now_datetime, today
 from frappe.utils.pdf import get_pdf
 
 from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts import (
@@ -72,11 +72,15 @@ def _assert_template_usable(template, company):
 	return tpl
 
 
-def _build_statement_doc(customer, company, template, as_of_date=None, from_date=None):
+def _build_statement_doc(
+	customer, company, template, as_of_date=None, from_date=None, show_future_payments=None
+):
 	"""Clone `template` in memory, narrowed to `customer`, dated `as_of_date`.
 
 	`as_of_date` is the end of the period for every report type. `from_date` is the start of a
 	General Ledger window and is ignored for Accounts Receivable, which has no start.
+	`show_future_payments`, when given, overrides the template's own setting (it drives the print
+	format's Future Payment column); None keeps the template's value.
 
 	The single point where PSOA semantics are encoded, so there is exactly one place for the clone,
 	the permission checks and the date mapping to be wrong. The returned doc is never saved.
@@ -118,6 +122,9 @@ def _build_statement_doc(customer, company, template, as_of_date=None, from_date
 			)
 	else:
 		doc.posting_date = as_of
+
+	if show_future_payments is not None:
+		doc.show_future_payments = cint(show_future_payments)
 
 	return doc
 
@@ -442,13 +449,17 @@ def get_default_recipient(party_type, party):
 
 
 @frappe.whitelist()
-def render_statement_html(customer, company, template, as_of_date=None, from_date=None):
+def render_statement_html(
+	customer, company, template, as_of_date=None, from_date=None, show_future_payments=None
+):
 	"""Statement HTML for the dialog preview.
 
 	Deliberately separate from the PDF path: preview never invokes wkhtmltopdf, so a broken PDF
 	toolchain still lets users see the statement and diagnose.
 	"""
-	return _render_html(_build_statement_doc(customer, company, template, as_of_date, from_date))
+	return _render_html(
+		_build_statement_doc(customer, company, template, as_of_date, from_date, show_future_payments)
+	)
 
 
 def _customers_with_any_email(customer_names):
@@ -569,8 +580,10 @@ def email_bulk_statements(company, template, as_of_date=None):
 
 
 @frappe.whitelist()
-def download_statement(customer, company, template, as_of_date=None, from_date=None):
-	doc = _build_statement_doc(customer, company, template, as_of_date, from_date)
+def download_statement(
+	customer, company, template, as_of_date=None, from_date=None, show_future_payments=None
+):
+	doc = _build_statement_doc(customer, company, template, as_of_date, from_date, show_future_payments)
 	pdf = _render_pdf(doc)
 
 	frappe.local.response.filename = _statement_filename(doc, customer)
@@ -580,15 +593,23 @@ def download_statement(customer, company, template, as_of_date=None, from_date=N
 
 @frappe.whitelist()
 def email_statement(
-	customer, company, template, as_of_date=None, recipient=None, cc="", bcc="", from_date=None
+	customer,
+	company,
+	template,
+	as_of_date=None,
+	recipient=None,
+	cc="",
+	bcc="",
+	from_date=None,
+	show_future_payments=None,
 ):
 	"""Send the statement as a PDF attachment.
 
 	Takes the statement's identity rather than its content: the HTML is rendered server-side from
-	(customer, company, template, dates) and never accepted from the client. `from_date` is last so
-	positional callers written before it existed keep working.
+	(customer, company, template, dates) and never accepted from the client. `from_date` and
+	`show_future_payments` are last so positional callers written before them keep working.
 	"""
-	doc = _build_statement_doc(customer, company, template, as_of_date, from_date)
+	doc = _build_statement_doc(customer, company, template, as_of_date, from_date, show_future_payments)
 
 	recipients = _split_emails(recipient) or _resolve_recipients(customer)
 	if not recipients:
