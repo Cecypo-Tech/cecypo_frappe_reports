@@ -207,6 +207,45 @@ class TestStatementOfAccounts(IntegrationTestCase):
 
 		self.assertEqual(seen, [getdate("2026-02-01")] * 3)
 
+	def test_show_future_payments_overrides_the_template(self):
+		"""The caller's checkbox wins over the template's saved value — a template saved with it ticked
+		showed the Future Payment column even when the page had it unticked."""
+		tpl = self._make_template(show_future_payments=1)
+
+		off = _build_statement_doc(TEST_CUSTOMER, TEST_COMPANY, tpl.name, show_future_payments=0)
+		on = _build_statement_doc(TEST_CUSTOMER, TEST_COMPANY, tpl.name, show_future_payments="1")
+
+		self.assertEqual(off.show_future_payments, 0)
+		self.assertEqual(on.show_future_payments, 1)
+
+	def test_show_future_payments_omitted_keeps_the_template_value(self):
+		"""klik_pos and the bulk paths pass nothing and must keep the template's own setting."""
+		tpl = self._make_template(show_future_payments=1)
+
+		doc = _build_statement_doc(TEST_CUSTOMER, TEST_COMPANY, tpl.name)
+
+		self.assertEqual(doc.show_future_payments, 1)
+
+	def test_single_statement_endpoints_forward_show_future_payments(self):
+		module = "cecypo_frappe_reports.cecypo_frappe_reports.statement_of_accounts"
+		tpl = self._make_template(show_future_payments=1)
+		args = (TEST_CUSTOMER, TEST_COMPANY, tpl.name, "2026-03-31")
+		seen = []
+
+		def capture(result):
+			return lambda doc: seen.append(doc.show_future_payments) or result
+
+		with (
+			patch(f"{module}._render_html", side_effect=capture("<html></html>")),
+			patch(f"{module}._render_pdf", side_effect=capture(b"%PDF")),
+			patch("frappe.sendmail"),
+		):
+			render_statement_html(*args, show_future_payments=0)
+			download_statement(*args, show_future_payments=0)
+			email_statement(*args, recipient="ar@example.com", show_future_payments=0)
+
+		self.assertEqual(seen, [0, 0, 0])
+
 	def test_as_of_date_defaults_to_today(self):
 		tpl = self._make_template()
 
