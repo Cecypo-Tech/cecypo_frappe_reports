@@ -1296,6 +1296,20 @@ class TransactionHistoryPage {
 			this._export_table($(e.currentTarget));
 		});
 
+		// Document links preview in Frappe's side panel; modified clicks still open a new tab.
+		$(m).on("click", 'a[href^="/app/"]', (e) => {
+			if (!frappe.ui.split_view_enabled?.()) return;
+			if (e.which !== 1 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+			const [slug, name] = e.currentTarget.pathname.split("/").slice(2);
+			const doctype = frappe.router.routes[slug]?.doctype;
+			if (!doctype || !name) return;
+			e.preventDefault();
+			e.stopPropagation(); // keep router.js and row toggles from acting on it
+			frappe.require("side_panel.bundle.js").then(() =>
+				frappe.ui.get_side_panel().open(doctype, decodeURIComponent(name))
+			);
+		});
+
 		// Bootstrap nav-tabs switching
 		$(m).on("click", ".nav-link[data-tab]", (e) => {
 			e.preventDefault();
